@@ -1892,10 +1892,27 @@ _SLOT_RE = re.compile(r"<@([^=]+)=([^>]+)>")
 
 
 def _extract_last_json(text: str) -> str:
-    """Return the last ``{...}`` substring from *text*, or *text* itself."""
+    """Return the last ``{...}`` substring from *text*, or *text* itself.
+
+    Handles nested braces by scanning forward from the last top-level
+    ``{`` and counting brace depth.  Falls back to the simple
+    last-{-to-last-} heuristic if depth tracking doesn't close.
+    """
+    # Try from the last '{' with depth tracking
     start = text.rfind("{")
+    if start == -1:
+        return text
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    # Depth never closed — simple fallback
     end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    if end > start:
         return text[start : end + 1]
     return text
 
@@ -1906,8 +1923,11 @@ def parse_slot_json_to_values(pred_json_str: str, targets_spec: dict) -> dict:
     ``"<@politics=1>"`` and return ``{target: value}`` with normalised
     values (ints where applicable, None for missing/null).
 
-    Robust against malformed JSON: first tries the last ``{…}`` sub-
-    string, then falls back to regex extraction over the whole text.
+    Strategy (in order):
+    1. Extract the last JSON object substring (``_extract_last_json``).
+    2. Try ``json.loads`` on that substring.
+    3. If that fails, fall back to regex ``<@target=value>`` extraction
+       over the *entire* raw text.
     """
     out: dict = {}
     raw_text = str(pred_json_str) if pred_json_str is not None else ""
@@ -1994,27 +2014,53 @@ def run_slot_val_metrics(
     Generate on a subset of val prompts, parse predicted slot-token JSON,
     compare against gold, and print + return per-target metrics.
 
+    Automatically overrides *max_new_tokens* if it is too small for the
+    number of slot-token targets (the most common cause of all-zero
+    val metrics).
+
     Returns
     -------
-    results : dict  {target: {acc, f1, n, coverage}}
-    df      : pd.DataFrame  one row per target
-    flat    : dict  flat metrics dict with keys like ``val/acc/{t}``,
-              ``val/f1_macro/{t}``, ``val/coverage/{t}``, ``val/n_eval/{t}``,
-              ``val/json_parse_failure_rate`` — ready for ``trainer.log()``.
+    results : dict   ``{target: {acc, f1, n_eval, gold_coverage, pred_coverage}}``
+    df      : pd.DataFrame   one row per evaluable target
+    flat    : dict   flat metrics dict for ``trainer.log()``:
+              ``val/acc/{t}``, ``val/f1/{t}``, ``val/gold_coverage/{t}``,
+              ``val/pred_coverage/{t}``, ``val/n_eval/{t}``,
+              ``val/json_parse_failure_rate``
     """
     import torch as _torch
     from sklearn.metrics import precision_recall_fscore_support as prfs
+
+    # ── Auto-override max_new_tokens if too small ─────────────────────
+    # Each target entry in the slot-token JSON is ~15-20 sub-word tokens.
+    n_slot_targets = sum(
+        1 for s in targets_spec.values()
+        if s.get("type") in ("binary", "multiclass")
+    )
+    min_new_tokens = max(n_slot_targets * 20 + 40, 200)
+    effective_max_new = max(max_new_tokens, min_new_tokens)
+    if effective_max_new > max_new_tokens:
+        print(
+            f"[slot-val] WARNING: max_new_tokens={max_new_tokens} is too "
+            f"small for {n_slot_targets} slot targets. "
+            f"Overriding to {effective_max_new} for val generation."
+        )
 
     n = min(max_examples, len(val_prompts))
     pred_vals = []
     gold_vals = []
     json_failures = 0
+    _N_DEBUG = 2  # print debug for the first N examples
 
     trainer.model.eval()
-    pad_id = getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+    pad_id = (
+        getattr(tokenizer, "pad_token_id", None)
+        or getattr(tokenizer, "eos_token_id", None)
+    )
 
     for i in range(n):
-        enc = tokenizer(val_prompts[i], return_tensors="pt", padding=False, truncation=False)
+        enc = tokenizer(
+            val_prompts[i], return_tensors="pt", padding=False, truncation=False
+        )
         input_ids = enc["input_ids"].to(device)
         attn = enc.get("attention_mask")
         if attn is not None:
@@ -2024,14 +2070,49 @@ def run_slot_val_metrics(
             gen = trainer.model.generate(
                 input_ids=input_ids,
                 attention_mask=attn,
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=effective_max_new,
                 do_sample=False,
                 pad_token_id=pad_id,
             )
         gen = gen.detach().cpu()
-        new_tok = gen[0, input_ids.shape[-1]:]
-        pred_text = tokenizer.decode(new_tok, skip_special_tokens=False)
 
+        # ── Robust extraction of the model's new text ─────────────
+        # Primary: token-id slicing (standard HF generate behaviour)
+        prompt_len = input_ids.shape[-1]
+        new_tok = gen[0, prompt_len:]
+        pred_text_tok = tokenizer.decode(new_tok, skip_special_tokens=False)
+
+        # Fallback: string-based slicing (guards against tokenizer
+        # inserting/removing special tokens that shift the boundary)
+        full_decode = tokenizer.decode(gen[0], skip_special_tokens=False)
+        prompt_decode = tokenizer.decode(
+            gen[0, :prompt_len], skip_special_tokens=False
+        )
+        pred_text_str = full_decode[len(prompt_decode):]
+
+        # Use whichever contains more slot tokens
+        n_slots_tok = len(_SLOT_RE.findall(pred_text_tok))
+        n_slots_str = len(_SLOT_RE.findall(pred_text_str))
+        pred_text = pred_text_tok if n_slots_tok >= n_slots_str else pred_text_str
+
+        # ── Debug prints (first N examples) ───────────────────────
+        if i < _N_DEBUG:
+            print(f"\n{'─'*80}")
+            print(f"[slot-val DEBUG] example {i}")
+            print(f"  prompt tail (last 600 chars):")
+            print(f"    ...{val_prompts[i][-600:]}")
+            print(f"  prompt tokens: {prompt_len}  |  gen tokens: {gen.shape[-1]}  |  new tokens: {len(new_tok)}")
+            print(f"  pred_text (token-slice, first 800 chars):")
+            print(f"    {pred_text_tok[:800]}")
+            if n_slots_str != n_slots_tok:
+                print(f"  pred_text (string-slice, first 800 chars):")
+                print(f"    {pred_text_str[:800]}")
+            print(f"  slot tokens found: tok_slice={n_slots_tok}  str_slice={n_slots_str}  (using {'tok' if n_slots_tok >= n_slots_str else 'str'})")
+            print(f"  full decode tail (last 1200 chars):")
+            print(f"    ...{full_decode[-1200:]}")
+            print(f"{'─'*80}")
+
+        # ── Parse prediction ──────────────────────────────────────
         try:
             pv = parse_slot_json_to_values(pred_text, targets_spec)
         except Exception:
@@ -2046,6 +2127,7 @@ def run_slot_val_metrics(
     if json_failures > 0:
         print(f"[slot-val] JSON parse failures: {json_failures}/{n}")
 
+    # ── Compute per-target metrics ────────────────────────────────────
     results = {}
     rows = []
     flat: dict = {}
@@ -2058,38 +2140,53 @@ def run_slot_val_metrics(
 
         y_true = []
         y_pred = []
-        pred_present = 0
         gold_present = 0
+        pred_present = 0
+
         for pv, gv in zip(pred_vals, gold_vals):
             g = gv.get(t)
             p = pv.get(t)
+            if g is not None:
+                gold_present += 1
+            # Only include in accuracy/F1 when gold is not None
             if g is None:
                 continue
-            gold_present += 1
             y_true.append(str(g))
             p_str = str(p) if p is not None else "__NONE__"
             y_pred.append(p_str)
             if p is not None:
                 pred_present += 1
 
-        # Prediction-side coverage: fraction where model produced a value
+        gold_cov = gold_present / max(n, 1)
         pred_cov = pred_present / max(gold_present, 1) if gold_present > 0 else 0.0
 
         if not y_true:
-            results[t] = {"acc": None, "f1": None, "n": 0, "coverage": 0.0}
+            results[t] = {
+                "acc": None, "f1": None,
+                "n_eval": 0,
+                "gold_coverage": gold_cov,
+                "pred_coverage": 0.0,
+            }
             flat[f"val/acc/{t}"] = 0.0
-            flat[f"val/f1_macro/{t}"] = 0.0
-            flat[f"val/coverage/{t}"] = 0.0
+            flat[f"val/f1/{t}"] = 0.0
+            flat[f"val/gold_coverage/{t}"] = round(gold_cov, 3)
+            flat[f"val/pred_coverage/{t}"] = 0.0
             flat[f"val/n_eval/{t}"] = 0
             continue
 
         acc = sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true)
         _, _, f1, _ = prfs(y_true, y_pred, average="macro", zero_division=0)
 
-        results[t] = {"acc": acc, "f1": f1, "n": gold_present, "coverage": pred_cov}
+        results[t] = {
+            "acc": acc, "f1": f1,
+            "n_eval": gold_present,
+            "gold_coverage": gold_cov,
+            "pred_coverage": pred_cov,
+        }
         flat[f"val/acc/{t}"] = round(acc, 4)
-        flat[f"val/f1_macro/{t}"] = round(f1, 4)
-        flat[f"val/coverage/{t}"] = round(pred_cov, 3)
+        flat[f"val/f1/{t}"] = round(f1, 4)
+        flat[f"val/gold_coverage/{t}"] = round(gold_cov, 3)
+        flat[f"val/pred_coverage/{t}"] = round(pred_cov, 3)
         flat[f"val/n_eval/{t}"] = gold_present
         rows.append({
             "epoch": epoch,
@@ -2098,16 +2195,27 @@ def run_slot_val_metrics(
             "acc": round(acc, 4),
             "f1_macro": round(f1, 4),
             "n_eval": gold_present,
-            "coverage": round(pred_cov, 3),
+            "gold_coverage": round(gold_cov, 3),
+            "pred_coverage": round(pred_cov, 3),
         })
 
+    # ── Summary table ─────────────────────────────────────────────────
     if rows:
         df = pd.DataFrame(rows)
         print(f"\n{'='*80}")
-        print(f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n})")
+        print(f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n}, "
+              f"max_new_tokens_used={effective_max_new})")
         print(f"{'='*80}")
         print(df.to_string(index=False))
+        mean_acc = df["acc"].mean()
+        mean_f1 = df["f1_macro"].mean()
+        mean_pred_cov = df["pred_coverage"].mean()
+        print(f"  MEAN  acc={mean_acc:.4f}  f1={mean_f1:.4f}  "
+              f"pred_coverage={mean_pred_cov:.3f}")
         print(f"{'='*80}\n")
+        flat["val/acc_mean"] = round(mean_acc, 4)
+        flat["val/f1_mean"] = round(mean_f1, 4)
+        flat["val/pred_coverage_mean"] = round(mean_pred_cov, 3)
     else:
         df = pd.DataFrame()
         print(f"[slot-val] No evaluable targets at epoch {epoch}")

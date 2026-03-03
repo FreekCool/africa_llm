@@ -498,6 +498,10 @@ def run_fine_tuned_gemma3(
                 trainer.train()
 
                 # ----- SLOT-TOKEN VAL METRICS -----
+                # max_new_tokens is NOT forwarded here because the
+                # function-level default (3-10) is far too small for the
+                # slot-token JSON.  run_slot_val_metrics auto-computes
+                # the minimum needed from the number of targets.
                 if use_slot_loss and val_prompts:
                     try:
                         slot_metrics, slot_df, slot_flat = run_slot_val_metrics(
@@ -507,18 +511,23 @@ def run_fine_tuned_gemma3(
                             val_prompts=val_prompts,
                             val_labels=val_labels,
                             targets_spec=targets_spec,
-                            max_new_tokens=max_new_tokens,
                             max_examples=min(100, len(val_prompts)),
                             epoch=current_epoch,
                         )
                         if slot_flat:
                             trainer.log(slot_flat)
                         if not slot_df.empty and results_folder:
-                            csv_name = f"slot_val_metrics_seed{train_val_seed}_lr{learning_rate}_epoch{current_epoch}.csv"
-                            slot_df.to_csv(os.path.join(results_folder, csv_name), index=False)
-                            print(f"[slot-val] Saved {csv_name}")
+                            csv_name = (
+                                f"slot_val_metrics_{mtype}_seed{train_val_seed}"
+                                f"_lr{learning_rate}_epoch{current_epoch}.csv"
+                            )
+                            csv_path = os.path.join(results_folder, csv_name)
+                            slot_df.to_csv(csv_path, index=False)
+                            print(f"[slot-val] Saved {csv_path}")
                     except Exception as e:
+                        import traceback
                         print(f"[WARN] slot val metrics failed: {e}")
+                        traceback.print_exc()
 
     #             if pynvml and handle:
     #                 print("GPU memory after training:")
