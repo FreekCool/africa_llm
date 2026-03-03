@@ -1891,6 +1891,19 @@ class DebugBatchCollator:
 _SLOT_RE = re.compile(r"<@([^=]+)=([^>]+)>")
 
 
+# Aliases to map prediction-time JSON keys back to canonical
+# target names used in ``targets_spec``. This lets evaluation
+# handle small schema mismatches without touching training.
+_EVAL_KEY_ALIASES: dict[str, list[str]] = {
+    # Canonical key : list of possible prediction-time variants
+    "resource_distribution_for_gender": [
+        "resource_distribution_gender",
+        "resource_distribution_for_gender",
+        "resource_distribution_for_gender1",
+    ],
+}
+
+
 def _extract_last_json(text: str) -> str:
     """Return the last ``{...}`` substring from *text*, or *text* itself.
 
@@ -2011,31 +2024,36 @@ def run_slot_val_metrics(
     epoch=0,
 ):
     """
-    Generate on a subset of val prompts, parse predicted slot-token JSON,
-    compare against gold, and print + return per-target metrics.
+    Generate on a subset of val prompts, parse predicted JSON / slot
+    tokens, compare against gold, and print + return per-target metrics
+    *plus* rich diagnostics on why some targets have zero coverage.
 
     Automatically overrides *max_new_tokens* if it is too small for the
-    number of slot-token targets (the most common cause of all-zero
-    val metrics).
+    number of slot-token targets.
 
     Returns
     -------
-    results : dict   ``{target: {acc, f1, n_eval, gold_coverage, pred_coverage}}``
-    df      : pd.DataFrame   one row per evaluable target
-    flat    : dict   flat metrics dict for ``trainer.log()``:
-              ``val/acc/{t}``, ``val/f1/{t}``, ``val/gold_coverage/{t}``,
-              ``val/pred_coverage/{t}``, ``val/n_eval/{t}``,
-              ``val/json_parse_failure_rate``
+    results : dict
+        {target: {acc, f1, n_eval, gold_coverage, pred_coverage,
+                  slot_token_coverage}}
+    df : pd.DataFrame
+        One row per evaluable target.
+    flat : dict
+        Flat metrics dict for ``trainer.log()`` with keys like
+        ``val/acc/{t}``, ``val/f1/{t}``, ``val/gold_coverage/{t}``,
+        ``val/pred_coverage/{t}``, ``val/slot_token_coverage/{t}``,
+        ``val/n_eval/{t}``, ``val/json_parse_failure_rate``, etc.
     """
     import torch as _torch
+    from collections import Counter, defaultdict
     from sklearn.metrics import precision_recall_fscore_support as prfs
 
     # ── Auto-override max_new_tokens if too small ─────────────────────
-    # Each target entry in the slot-token JSON is ~15-20 sub-word tokens.
     n_slot_targets = sum(
         1 for s in targets_spec.values()
         if s.get("type") in ("binary", "multiclass")
     )
+    # Rough budget: ~15–20 sub-word tokens per target + small margin.
     min_new_tokens = max(n_slot_targets * 20 + 40, 200)
     effective_max_new = max(max_new_tokens, min_new_tokens)
     if effective_max_new > max_new_tokens:
@@ -2046,10 +2064,14 @@ def run_slot_val_metrics(
         )
 
     n = min(max_examples, len(val_prompts))
-    pred_vals = []
-    gold_vals = []
+    pred_vals = []       # normalised per-target predictions
+    gold_vals = []       # normalised gold per-target values
+    raw_pred_dicts = []  # raw JSON dicts from model (for diagnostics)
     json_failures = 0
-    _N_DEBUG = 2  # print debug for the first N examples
+    _N_DEBUG = 2  # print full debug for first N examples
+
+    # Global schema statistics
+    pred_key_counts: Counter[str] = Counter()
 
     trainer.model.eval()
     pad_id = (
@@ -2077,13 +2099,10 @@ def run_slot_val_metrics(
         gen = gen.detach().cpu()
 
         # ── Robust extraction of the model's new text ─────────────
-        # Primary: token-id slicing (standard HF generate behaviour)
         prompt_len = input_ids.shape[-1]
         new_tok = gen[0, prompt_len:]
         pred_text_tok = tokenizer.decode(new_tok, skip_special_tokens=False)
 
-        # Fallback: string-based slicing (guards against tokenizer
-        # inserting/removing special tokens that shift the boundary)
         full_decode = tokenizer.decode(gen[0], skip_special_tokens=False)
         prompt_decode = tokenizer.decode(
             gen[0, :prompt_len], skip_special_tokens=False
@@ -2101,20 +2120,49 @@ def run_slot_val_metrics(
             print(f"[slot-val DEBUG] example {i}")
             print(f"  prompt tail (last 600 chars):")
             print(f"    ...{val_prompts[i][-600:]}")
-            print(f"  prompt tokens: {prompt_len}  |  gen tokens: {gen.shape[-1]}  |  new tokens: {len(new_tok)}")
+            print(
+                f"  prompt tokens: {prompt_len}  |  gen tokens: {gen.shape[-1]}  "
+                f"|  new tokens: {len(new_tok)}"
+            )
             print(f"  pred_text (token-slice, first 800 chars):")
             print(f"    {pred_text_tok[:800]}")
             if n_slots_str != n_slots_tok:
                 print(f"  pred_text (string-slice, first 800 chars):")
                 print(f"    {pred_text_str[:800]}")
-            print(f"  slot tokens found: tok_slice={n_slots_tok}  str_slice={n_slots_str}  (using {'tok' if n_slots_tok >= n_slots_str else 'str'})")
+            print(
+                f"  slot tokens found: tok_slice={n_slots_tok}  "
+                f"str_slice={n_slots_str}  "
+                f"(using {'tok' if n_slots_tok >= n_slots_str else 'str'})"
+            )
             print(f"  full decode tail (last 1200 chars):")
             print(f"    ...{full_decode[-1200:]}")
             print(f"{'─'*80}")
 
-        # ── Parse prediction ──────────────────────────────────────
+        # ── Raw JSON dict for diagnostics and alias handling ──────
+        raw_dict: dict[str, object] = {}
+        json_slice = _extract_last_json(pred_text)
         try:
-            pv = parse_slot_json_to_values(pred_text, targets_spec)
+            raw_dict = json.loads(json_slice)
+        except Exception:
+            raw_dict = {}
+            json_failures += 1
+
+        # Track schema usage
+        pred_key_counts.update(raw_dict.keys())
+
+        # Apply simple alias mapping before normalisation so scoring
+        # sees aliased keys under their canonical target name.
+        aliased_dict = dict(raw_dict)
+        for canon, aliases in _EVAL_KEY_ALIASES.items():
+            if canon in aliased_dict:
+                continue
+            for ak in aliases:
+                if ak in raw_dict:
+                    aliased_dict[canon] = raw_dict[ak]
+                    break
+
+        try:
+            pv = parse_slot_json_to_values(json.dumps(aliased_dict), targets_spec)
         except Exception:
             pv = {}
             json_failures += 1
@@ -2123,16 +2171,28 @@ def run_slot_val_metrics(
 
         pred_vals.append(pv)
         gold_vals.append(gv)
+        raw_pred_dicts.append(raw_dict)
 
     if json_failures > 0:
-        print(f"[slot-val] JSON parse failures: {json_failures}/{n}")
+        print(f"[slot-val] JSON parse-related failures: {json_failures}/{n}")
 
-    # ── Compute per-target metrics ────────────────────────────────────
-    results = {}
-    rows = []
+    # ── Per-target metrics and diagnostics ─────────────────────────────
+    results: dict[str, dict] = {}
+    rows: list[dict] = []
     flat: dict = {}
 
     flat["val/json_parse_failure_rate"] = json_failures / max(n, 1)
+
+    # Diagnostics counters per target
+    diag = defaultdict(
+        lambda: {
+            "gold_present": 0,
+            "pred_key_present": 0,
+            "pred_parsed_nonnull": 0,
+            "pred_slot_token_present": 0,
+            "alias_used": 0,
+        }
+    )
 
     for t, spec in targets_spec.items():
         if spec.get("type") not in ("binary", "multiclass"):
@@ -2140,37 +2200,72 @@ def run_slot_val_metrics(
 
         y_true = []
         y_pred = []
-        gold_present = 0
-        pred_present = 0
 
-        for pv, gv in zip(pred_vals, gold_vals):
+        aliases = _EVAL_KEY_ALIASES.get(t, [])
+
+        for pv, gv, rd in zip(pred_vals, gold_vals, raw_pred_dicts):
             g = gv.get(t)
-            p = pv.get(t)
             if g is not None:
-                gold_present += 1
+                diag[t]["gold_present"] += 1
+
+            # Raw-key presence / alias usage / slot-token presence
+            key_present = False
+            alias_hit = False
+            raw_val = None
+            if t in rd:
+                key_present = True
+                raw_val = rd[t]
+            else:
+                for ak in aliases:
+                    if ak in rd:
+                        key_present = True
+                        alias_hit = True
+                        raw_val = rd[ak]
+                        break
+
+            if key_present:
+                diag[t]["pred_key_present"] += 1
+            if alias_hit:
+                diag[t]["alias_used"] += 1
+            if raw_val is not None and _SLOT_RE.search(str(raw_val)):
+                diag[t]["pred_slot_token_present"] += 1
+
             # Only include in accuracy/F1 when gold is not None
             if g is None:
                 continue
+
+            p = pv.get(t)
+            if p is not None:
+                diag[t]["pred_parsed_nonnull"] += 1
+
             y_true.append(str(g))
             p_str = str(p) if p is not None else "__NONE__"
             y_pred.append(p_str)
-            if p is not None:
-                pred_present += 1
 
+        gold_present = diag[t]["gold_present"]
         gold_cov = gold_present / max(n, 1)
+        pred_present = diag[t]["pred_parsed_nonnull"]
         pred_cov = pred_present / max(gold_present, 1) if gold_present > 0 else 0.0
+        slot_cov = (
+            diag[t]["pred_slot_token_present"] / max(gold_present, 1)
+            if gold_present > 0
+            else 0.0
+        )
 
         if not y_true:
             results[t] = {
-                "acc": None, "f1": None,
+                "acc": None,
+                "f1": None,
                 "n_eval": 0,
                 "gold_coverage": gold_cov,
-                "pred_coverage": 0.0,
+                "pred_coverage": pred_cov,
+                "slot_token_coverage": slot_cov,
             }
             flat[f"val/acc/{t}"] = 0.0
             flat[f"val/f1/{t}"] = 0.0
             flat[f"val/gold_coverage/{t}"] = round(gold_cov, 3)
-            flat[f"val/pred_coverage/{t}"] = 0.0
+            flat[f"val/pred_coverage/{t}"] = round(pred_cov, 3)
+            flat[f"val/slot_token_coverage/{t}"] = round(slot_cov, 3)
             flat[f"val/n_eval/{t}"] = 0
             continue
 
@@ -2178,15 +2273,18 @@ def run_slot_val_metrics(
         _, _, f1, _ = prfs(y_true, y_pred, average="macro", zero_division=0)
 
         results[t] = {
-            "acc": acc, "f1": f1,
+            "acc": acc,
+            "f1": f1,
             "n_eval": gold_present,
             "gold_coverage": gold_cov,
             "pred_coverage": pred_cov,
+            "slot_token_coverage": slot_cov,
         }
         flat[f"val/acc/{t}"] = round(acc, 4)
         flat[f"val/f1/{t}"] = round(f1, 4)
         flat[f"val/gold_coverage/{t}"] = round(gold_cov, 3)
         flat[f"val/pred_coverage/{t}"] = round(pred_cov, 3)
+        flat[f"val/slot_token_coverage/{t}"] = round(slot_cov, 3)
         flat[f"val/n_eval/{t}"] = gold_present
         rows.append({
             "epoch": epoch,
@@ -2197,27 +2295,78 @@ def run_slot_val_metrics(
             "n_eval": gold_present,
             "gold_coverage": round(gold_cov, 3),
             "pred_coverage": round(pred_cov, 3),
+            "slot_token_coverage": round(slot_cov, 3),
         })
 
     # ── Summary table ─────────────────────────────────────────────────
     if rows:
         df = pd.DataFrame(rows)
         print(f"\n{'='*80}")
-        print(f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n}, "
-              f"max_new_tokens_used={effective_max_new})")
+        print(
+            f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n}, "
+            f"max_new_tokens_used={effective_max_new})"
+        )
         print(f"{'='*80}")
         print(df.to_string(index=False))
         mean_acc = df["acc"].mean()
         mean_f1 = df["f1_macro"].mean()
         mean_pred_cov = df["pred_coverage"].mean()
-        print(f"  MEAN  acc={mean_acc:.4f}  f1={mean_f1:.4f}  "
-              f"pred_coverage={mean_pred_cov:.3f}")
+        mean_slot_cov = df["slot_token_coverage"].mean()
+        print(
+            f"  MEAN  acc={mean_acc:.4f}  f1={mean_f1:.4f}  "
+            f"pred_coverage={mean_pred_cov:.3f}  "
+            f"slot_token_coverage={mean_slot_cov:.3f}"
+        )
         print(f"{'='*80}\n")
         flat["val/acc_mean"] = round(mean_acc, 4)
         flat["val/f1_mean"] = round(mean_f1, 4)
         flat["val/pred_coverage_mean"] = round(mean_pred_cov, 3)
+        flat["val/slot_token_coverage_mean"] = round(mean_slot_cov, 3)
     else:
         df = pd.DataFrame()
         print(f"[slot-val] No evaluable targets at epoch {epoch}")
+
+    # ── Schema mismatch + zero-coverage diagnostics ───────────────────
+    if rows:
+        # Keys seen in predictions but not in spec
+        spec_keys = {t for t, s in targets_spec.items()
+                     if s.get("type") in ("binary", "multiclass")}
+        unknown_keys = [(k, c) for k, c in pred_key_counts.items()
+                        if k not in spec_keys]
+        unknown_keys.sort(key=lambda x: -x[1])
+
+        never_predicted = [
+            t for t in spec_keys if diag[t]["pred_key_present"] == 0
+        ]
+
+        print("\n[slot-val] SCHEMA MISMATCH SUMMARY")
+        print("  Keys in predictions but not in targets_spec (top 20):")
+        for k, c in unknown_keys[:20]:
+            print(f"    {k!r}: {c}")
+        print("  Targets in targets_spec never seen as keys:")
+        for t in never_predicted[:20]:
+            print(f"    {t!r}")
+
+        # Failure reasons for targets with zero pred_coverage
+        print("\n[slot-val] ZERO-COVERAGE TARGET DIAGNOSTICS")
+        for t in spec_keys:
+            r = results.get(t, {})
+            if not r or (r.get("pred_coverage") or 0.0) > 0.0:
+                continue
+            d = diag[t]
+            print(
+                f"  {t}: gold_present={d['gold_present']}, "
+                f"pred_key_present={d['pred_key_present']}, "
+                f"alias_hits={d['alias_used']}, "
+                f"parsed_nonnull={d['pred_parsed_nonnull']}, "
+                f"slot_token_hits={d['pred_slot_token_present']}"
+            )
+            # Suggest similar unknown keys (simple fuzzy by substring)
+            similar = [
+                (k, c) for k, c in unknown_keys
+                if t in k or k in t
+            ][:5]
+            if similar:
+                print("    similar unknown keys:", similar)
 
     return results, df, flat

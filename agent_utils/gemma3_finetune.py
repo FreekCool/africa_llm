@@ -271,6 +271,29 @@ def run_fine_tuned_gemma3(
             # =====================
             # 2) BUILD VAL PROMPTS + VAL DATASET
             # =====================
+            # For validation, we can afford to be a bit stricter about
+            # the required JSON schema so that the model is explicitly
+            # told to return *all* keys. Training still uses the base
+            # prompt so we do not change the optimisation objective.
+            eval_prompt = prompt
+            if targets_spec is not None:
+                schema_keys = [
+                    t for t, s in targets_spec.items()
+                    if s.get("type") in ("binary", "multiclass", "text")
+                ]
+                if schema_keys:
+                    schema_lines = [
+                        "Return your answer as a JSON object with exactly these keys (in any order):",
+                        ", ".join(f'\"{k}\"' for k in schema_keys),
+                        "",
+                        "For every binary or multiclass key, output the value as a slot token like "
+                        "\"<@politics=1>\" instead of a plain number.",
+                        "If a key is not applicable or unknown, still include it and use the appropriate "
+                        "unclear code (e.g. \"<@politics=99>\").",
+                        "Do not omit any keys; every key listed above must be present in the JSON.",
+                    ]
+                    eval_prompt = prompt + "\n\n" + "\n".join(schema_lines)
+
             (
                 val_prompts,
                 val_texts,
@@ -285,7 +308,7 @@ def run_fine_tuned_gemma3(
                 tokenizer=tokenizer,
                 max_tokens=max_tokens,
                 text_col=text_col,
-                prompt=prompt,
+                prompt=eval_prompt,
                 answer_col=answer_col,
                 id_col=id_col,
             )
@@ -296,7 +319,7 @@ def run_fine_tuned_gemma3(
                 tokenizer=tokenizer,
                 max_tokens=max_tokens,
                 text_col=text_col,
-                prompt=prompt,
+                prompt=eval_prompt,
                 answer_col=answer_col,
                 id_col=id_col,
                 image_folder=image_folder if is_mm else None,
