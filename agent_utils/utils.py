@@ -747,22 +747,37 @@ def build_sft_dataset(
     # -------------------------
     if not multimodal:
         input_prompts = []
-    
+
         for _, row in df.iterrows():
             input_text = row[text_col]
             if pd.isna(input_text):
                 continue
-    
+
             answer = row[answer_col]
             if pd.isna(answer):
                 continue
-    
+
             # truncate transcript
-            tokens = tokenizer.tokenize(str(input_text))[:max_tokens]
+            #
+            # IMPORTANT:
+            # We deliberately do NOT spend the entire `max_tokens` budget on
+            # the transcript, because the assistant answer (slot-token JSON)
+            # must still fit within the final SFT max_seq_length. If we used
+            # all `max_tokens` here, then after appending the answer, TRL's
+            # SFT tokenization (with max_seq_length ~= max_tokens) would
+            # truncate from the right and cut off the assistant answer,
+            # meaning slot tokens never appear in `input_ids`.
+            if max_tokens is not None and max_tokens > 512:
+                # Reserve 512 tokens for the assistant side.
+                text_budget = max_tokens - 512
+            else:
+                text_budget = max_tokens
+
+            tokens = tokenizer.tokenize(str(input_text))[:text_budget]
             truncated_text = tokenizer.convert_tokens_to_string(tokens)
-    
+
             instruction = insert_text_once(prompt, truncated_text)
-    
+
             # ✅ NEW: optionally convert answer JSON into slot-token JSON
             if targets_spec is not None:
                 try:
@@ -772,7 +787,7 @@ def build_sft_dataset(
                     answer_for_sft = str(answer)
             else:
                 answer_for_sft = str(answer)
-    
+
             if hasattr(tokenizer, "apply_chat_template"):
                 messages = [
                     {"role": "user", "content": instruction},
@@ -783,9 +798,9 @@ def build_sft_dataset(
                 )
             else:
                 full_text = f"<|user|>{instruction}<|assistant|>{answer_for_sft}<|end_of_text|>"
-    
+
             input_prompts.append(full_text)
-    
+
         return Dataset.from_dict({"text": input_prompts})
 
     # -------------------------
@@ -807,7 +822,14 @@ def build_sft_dataset(
 
         answer = row[answer_col]
 
-        tokens = tokenizer.tokenize(str(input_text))[:max_tokens]
+        # Same reasoning as in the text-only branch: keep some budget for the
+        # assistant answer so it survives SFT truncation.
+        if max_tokens is not None and max_tokens > 512:
+            text_budget = max_tokens - 512
+        else:
+            text_budget = max_tokens
+
+        tokens = tokenizer.tokenize(str(input_text))[:text_budget]
         truncated_text = tokenizer.convert_tokens_to_string(tokens)
 
         query = insert_text_once(prompt, truncated_text)
