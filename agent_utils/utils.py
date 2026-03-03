@@ -1667,7 +1667,7 @@ class SlotLossCollator:
                 tid = tokenizer.convert_tokens_to_ids(tok)
                 ids.append(tid)
             self.target_token_ids[t] = set(ids)
-            self.target_num_classes[t] = (2 if spec.get("type") == "binary" else len(allowed))
+            self.target_num_classes[t] = len(allowed)
 
     def __call__(self, features):
         # TRL-prepared dataset gives input_ids/attention_mask only
@@ -1882,3 +1882,197 @@ class DebugBatchCollator:
             print("=" * 100 + "\n")
 
         return batch
+
+
+# ==============================================================================
+# SLOT-TOKEN PARSING HELPERS (for val / test evaluation)
+# ==============================================================================
+
+_SLOT_RE = re.compile(r"<@([^=]+)=([^>]+)>")
+
+
+def parse_slot_json_to_values(pred_json_str: str, targets_spec: dict) -> dict:
+    """
+    Parse a predicted assistant JSON that may contain slot tokens like
+    ``"<@politics=1>"`` and return ``{target: value}`` with normalised
+    values (ints where applicable, None for missing/null).
+
+    Robust against malformed JSON: falls back to regex extraction.
+    """
+    out: dict = {}
+
+    try:
+        d = json.loads(pred_json_str) if isinstance(pred_json_str, str) else dict(pred_json_str)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        d = {}
+        for m in _SLOT_RE.finditer(str(pred_json_str)):
+            d[m.group(1)] = f"<@{m.group(1)}={m.group(2)}>"
+
+    for t, spec in targets_spec.items():
+        if spec.get("type") not in ("binary", "multiclass"):
+            continue
+
+        raw = d.get(t, None)
+        if raw is None or raw == "null":
+            out[t] = None
+            continue
+
+        raw_str = str(raw)
+        sm = _SLOT_RE.search(raw_str)
+        if sm:
+            v_str = sm.group(2)
+        else:
+            v_str = raw_str.strip().strip('"').strip("'")
+
+        try:
+            v_float = float(v_str)
+            out[t] = int(v_float) if v_float == int(v_float) else v_float
+        except (ValueError, TypeError):
+            out[t] = v_str
+
+    return out
+
+
+def parse_gold_json_to_values(gold_json_str: str, targets_spec: dict) -> dict:
+    """
+    Normalise a gold-label JSON (from the dataframe) into the same
+    ``{target: value}`` format as ``parse_slot_json_to_values``.
+
+    Applies the same None-fallback policy used during training:
+    None → 99 if 99 in allowed, else -1 if -1 in allowed, else None.
+    """
+    try:
+        d = json.loads(gold_json_str) if isinstance(gold_json_str, str) else dict(gold_json_str)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        d = {}
+
+    out: dict = {}
+    for t, spec in targets_spec.items():
+        if spec.get("type") not in ("binary", "multiclass"):
+            continue
+
+        v = d.get(t, None)
+        v = _normalize_value_for_slots(v)
+
+        if v is None:
+            allowed_strs = {str(a) for a in spec.get("allowed", [])}
+            if "99" in allowed_strs:
+                v = 99
+            elif "-1" in allowed_strs:
+                v = -1
+
+        out[t] = v
+
+    return out
+
+
+def run_slot_val_metrics(
+    trainer,
+    tokenizer,
+    device,
+    val_prompts,
+    val_labels,
+    targets_spec,
+    max_new_tokens=50,
+    max_examples=100,
+    epoch=0,
+):
+    """
+    Generate on a subset of val prompts, parse predicted slot-token JSON,
+    compare against gold, and print + return per-target metrics.
+
+    Returns a dict ``{target: {acc, f1, n, coverage}}`` and a summary
+    DataFrame.
+    """
+    from sklearn.metrics import precision_recall_fscore_support as prfs
+
+    n = min(max_examples, len(val_prompts))
+    pred_vals = []
+    gold_vals = []
+    json_failures = 0
+
+    trainer.model.eval()
+    pad_id = getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+
+    for i in range(n):
+        enc = tokenizer(val_prompts[i], return_tensors="pt", padding=False, truncation=False)
+        input_ids = enc["input_ids"].to(device)
+        attn = enc.get("attention_mask")
+        if attn is not None:
+            attn = attn.to(device)
+
+        with torch.no_grad():
+            gen = trainer.model.generate(
+                input_ids=input_ids,
+                attention_mask=attn,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=pad_id,
+            )
+        gen = gen.detach().cpu()
+        new_tok = gen[0, input_ids.shape[-1]:]
+        pred_text = tokenizer.decode(new_tok, skip_special_tokens=False)
+
+        try:
+            pv = parse_slot_json_to_values(pred_text, targets_spec)
+        except Exception:
+            pv = {}
+            json_failures += 1
+
+        gv = parse_gold_json_to_values(str(val_labels[i]), targets_spec)
+
+        pred_vals.append(pv)
+        gold_vals.append(gv)
+
+    if json_failures > 0:
+        print(f"[slot-val] JSON parse failures: {json_failures}/{n}")
+
+    results = {}
+    rows = []
+
+    for t, spec in targets_spec.items():
+        if spec.get("type") not in ("binary", "multiclass"):
+            continue
+
+        y_true = []
+        y_pred = []
+        present = 0
+        for pv, gv in zip(pred_vals, gold_vals):
+            g = gv.get(t)
+            p = pv.get(t)
+            if g is None:
+                continue
+            present += 1
+            y_true.append(str(g))
+            y_pred.append(str(p) if p is not None else "__NONE__")
+
+        if not y_true:
+            results[t] = {"acc": None, "f1": None, "n": 0, "coverage": 0.0}
+            continue
+
+        acc = sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true)
+        _, _, f1, _ = prfs(y_true, y_pred, average="macro", zero_division=0)
+
+        results[t] = {"acc": acc, "f1": f1, "n": present, "coverage": present / n}
+        rows.append({
+            "epoch": epoch,
+            "target": t,
+            "type": spec.get("type"),
+            "acc": round(acc, 4),
+            "f1_macro": round(f1, 4),
+            "n_eval": present,
+            "coverage": round(present / n, 3),
+        })
+
+    if rows:
+        df = pd.DataFrame(rows)
+        print(f"\n{'='*80}")
+        print(f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n})")
+        print(f"{'='*80}")
+        print(df.to_string(index=False))
+        print(f"{'='*80}\n")
+    else:
+        df = pd.DataFrame()
+        print(f"[slot-val] No evaluable targets at epoch {epoch}")
+
+    return results, df

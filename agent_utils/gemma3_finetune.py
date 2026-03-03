@@ -24,7 +24,7 @@ from sklearn.metrics import precision_recall_fscore_support
 
 from .slot_trainer import MultiTargetSlotSFTTrainer
 from .utils import (
-    DEBUG, DEBUG_EXAMPLE_IDX, DEBUG_MAX_CHARS,   # ✅ add these
+    DEBUG, DEBUG_EXAMPLE_IDX, DEBUG_MAX_CHARS,
     setup_seed,
     set_quant_and_peft_config_gemma,
     set_training_params_gemma,
@@ -42,8 +42,9 @@ from .utils import (
     build_slot_token_map,
     all_slot_tokens,
     SlotLossCollator,
-    debug_print_slot_token_setup,                # ✅ you call this, so import it too
-    debug_print_one_sft_string_example,          # ✅ you call this, so import it too
+    debug_print_slot_token_setup,
+    debug_print_one_sft_string_example,
+    run_slot_val_metrics,
 )
 
 from .eval_utils import (
@@ -371,12 +372,13 @@ def run_fine_tuned_gemma3(
             use_slot_loss = targets_spec is not None
 
             if use_slot_loss:
-                # Use a single max_seq_length for this TRL version, which still
-                # reads it directly from the constructor kwargs (default 1024 if
-                # not provided).
                 sft_max_seq = max_tokens if max_tokens is not None else 4096
 
+                # Slot-loss needs labels_by_target to survive column pruning.
+                training_params.remove_unused_columns = False
+
                 print(f"[SLOT-LOSS] Using max_seq_length={sft_max_seq}")
+                print(f"[SLOT-LOSS] remove_unused_columns forced to False")
 
                 collator = SlotLossCollator(tokenizer, targets_spec)
 
@@ -492,6 +494,23 @@ def run_fine_tuned_gemma3(
 
                 # ----- TRAIN -----
                 trainer.train()
+
+                # ----- SLOT-TOKEN VAL METRICS -----
+                if use_slot_loss and val_prompts:
+                    try:
+                        slot_metrics, slot_df = run_slot_val_metrics(
+                            trainer=trainer,
+                            tokenizer=tokenizer,
+                            device=device,
+                            val_prompts=val_prompts,
+                            val_labels=val_labels,
+                            targets_spec=targets_spec,
+                            max_new_tokens=max_new_tokens,
+                            max_examples=min(100, len(val_prompts)),
+                            epoch=current_epoch,
+                        )
+                    except Exception as e:
+                        print(f"[WARN] slot val metrics failed: {e}")
 
     #             if pynvml and handle:
     #                 print("GPU memory after training:")
