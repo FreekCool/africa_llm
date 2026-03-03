@@ -715,6 +715,30 @@ def insert_text_once(prompt: str, text: str) -> str:
     pre, post = prompt.split("{}", 1)
     return pre + text + post
 
+def _token_len(text, tokenizer):
+    """Token count of a raw string (no special-token additions)."""
+    return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+
+def _build_chat_text(tokenizer, instruction, answer=None):
+    """Build chat-formatted string.  answer=None → user turn only."""
+    if hasattr(tokenizer, "apply_chat_template"):
+        if answer is not None:
+            messages = [
+                {"role": "user", "content": instruction},
+                {"role": "assistant", "content": answer},
+            ]
+        else:
+            messages = [{"role": "user", "content": instruction}]
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False,
+        )
+    else:
+        if answer is not None:
+            return f"<|user|>{instruction}<|assistant|>{answer}<|end_of_text|>"
+        return f"<|user|>{instruction}"
+
+
 def build_sft_dataset(
     df,
     tokenizer,
@@ -729,7 +753,7 @@ def build_sft_dataset(
     validate_images=True,
     skip_if_no_images=True,
     allowed_exts=(".jpg", ".jpeg", ".png", ".webp"),
-    targets_spec=None,   # ✅ ADD THIS
+    targets_spec=None,
 ):
     if prompt is None or not isinstance(prompt, str) or "{}" not in prompt:
         raise ValueError("`prompt` must be a string template containing '{}'.")
@@ -747,8 +771,10 @@ def build_sft_dataset(
     # -------------------------
     if not multimodal:
         input_prompts = []
+        _n_debug_printed = 0
+        max_seq = max_tokens if max_tokens is not None else 4096
 
-        for _, row in df.iterrows():
+        for row_i, (_, row) in enumerate(df.iterrows()):
             input_text = row[text_col]
             if pd.isna(input_text):
                 continue
@@ -757,28 +783,7 @@ def build_sft_dataset(
             if pd.isna(answer):
                 continue
 
-            # truncate transcript
-            #
-            # IMPORTANT:
-            # We deliberately do NOT spend the entire `max_tokens` budget on
-            # the transcript, because the assistant answer (slot-token JSON)
-            # must still fit within the final SFT max_seq_length. If we used
-            # all `max_tokens` here, then after appending the answer, TRL's
-            # SFT tokenization (with max_seq_length ~= max_tokens) would
-            # truncate from the right and cut off the assistant answer,
-            # meaning slot tokens never appear in `input_ids`.
-            if max_tokens is not None and max_tokens > 512:
-                # Reserve 512 tokens for the assistant side.
-                text_budget = max_tokens - 512
-            else:
-                text_budget = max_tokens
-
-            tokens = tokenizer.tokenize(str(input_text))[:text_budget]
-            truncated_text = tokenizer.convert_tokens_to_string(tokens)
-
-            instruction = insert_text_once(prompt, truncated_text)
-
-            # ✅ NEW: optionally convert answer JSON into slot-token JSON
+            # --- 1) Convert answer FIRST (needed for budget calculation) ---
             if targets_spec is not None:
                 try:
                     answer_for_sft = targets_json_to_slot_json(str(answer), targets_spec)
@@ -788,16 +793,71 @@ def build_sft_dataset(
             else:
                 answer_for_sft = str(answer)
 
-            if hasattr(tokenizer, "apply_chat_template"):
-                messages = [
-                    {"role": "user", "content": instruction},
-                    {"role": "assistant", "content": answer_for_sft},
-                ]
-                full_text = tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False
-                )
-            else:
-                full_text = f"<|user|>{instruction}<|assistant|>{answer_for_sft}<|end_of_text|>"
+            # --- 2) Dynamic transcript budgeting ---
+            # Build a full chat with EMPTY transcript to measure the fixed
+            # overhead (prompt template + chat wrappers + assistant answer).
+            # The remaining token budget goes to the transcript.
+            instruction_empty = insert_text_once(prompt, "")
+            full_text_empty = _build_chat_text(tokenizer, instruction_empty, answer_for_sft)
+            len_empty = _token_len(full_text_empty, tokenizer)
+
+            safety_margin = 48
+            transcript_budget = max_seq - len_empty - safety_margin
+            if transcript_budget < 0:
+                transcript_budget = 0
+
+            # --- 3) Truncate transcript to budget ---
+            all_transcript_tokens = tokenizer.tokenize(str(input_text))
+            truncated_tokens = all_transcript_tokens[:transcript_budget]
+            truncated_text = tokenizer.convert_tokens_to_string(truncated_tokens)
+
+            # --- 4) Build final full_text ---
+            instruction = insert_text_once(prompt, truncated_text)
+            full_text = _build_chat_text(tokenizer, instruction, answer_for_sft)
+
+            # --- 5) Verify length; shrink transcript if still over budget ---
+            final_len = _token_len(full_text, tokenizer)
+            shrink_iters = 0
+            while final_len > max_seq and len(truncated_tokens) > 0 and shrink_iters < 5:
+                overshoot = final_len - max_seq
+                cut = max(overshoot + 16, 64)
+                if cut >= len(truncated_tokens):
+                    truncated_tokens = []
+                else:
+                    truncated_tokens = truncated_tokens[:-cut]
+                truncated_text = tokenizer.convert_tokens_to_string(truncated_tokens)
+                instruction = insert_text_once(prompt, truncated_text)
+                full_text = _build_chat_text(tokenizer, instruction, answer_for_sft)
+                final_len = _token_len(full_text, tokenizer)
+                shrink_iters += 1
+
+            # --- Debug prints (first 2 examples only) ---
+            if DEBUG and _n_debug_printed < 2:
+                if _n_debug_printed == 0:
+                    print("\n" + "=" * 100)
+                    print("TOKEN BUDGET DEBUG (build_sft_dataset, text-only)")
+                    print("=" * 100)
+                    print(f"max_seq_length: {max_seq}")
+                    user_only_text = _build_chat_text(tokenizer, instruction_empty)
+                    print(f"instruction_template_tokens (no transcript, user-only): "
+                          f"{_token_len(user_only_text, tokenizer)}")
+                    print(f"full_text_empty_tokens (no transcript + answer): {len_empty}")
+                    print(f"transcript_budget (first row): {transcript_budget}")
+
+                print(f"\n--- row_i={row_i} ---")
+                print(f"  raw_transcript_tokens: {len(all_transcript_tokens)}")
+                print(f"  truncated_transcript_tokens: {len(truncated_tokens)}")
+                print(f"  answer_for_sft_tokens: {_token_len(answer_for_sft, tokenizer)}")
+                print(f"  final_full_text_tokens: {final_len}  (max_seq={max_seq})")
+                print(f"  fits_in_max_seq: {final_len <= max_seq}")
+                tail = full_text[-800:]
+                print(f"  full_text tail (last 800 chars):")
+                print(f"  {tail}")
+                print(f"  slot_tokens_in_tail: {'<@' in tail}")
+
+                _n_debug_printed += 1
+                if _n_debug_printed >= 2:
+                    print("=" * 100 + "\n")
 
             input_prompts.append(full_text)
 
@@ -1559,7 +1619,13 @@ def targets_json_to_slot_json(answer_json_str: str, targets_spec: dict) -> str:
 
         ttype = spec.get("type")
         if ttype in ("binary", "multiclass"):
-            v = _normalize_value_for_slots(v)          # ✅ THIS is the missing line
+            v = _normalize_value_for_slots(v)
+            if v is None:
+                allowed_strs = {str(a) for a in spec.get("allowed", [])}
+                if "99" in allowed_strs:
+                    v = 99
+                elif "-1" in allowed_strs:
+                    v = -1
             v_str = "None" if v is None else str(v)
             tok = token_map.get(k, {}).get(v_str, None)
             out[k] = tok if tok is not None else None

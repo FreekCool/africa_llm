@@ -449,15 +449,26 @@ def run_fine_tuned_gemma3(
                     else:
                         print("✅ Supervised positions found -> slot tokens are in labels.")
             
-                    # 4) Show decoded batch[0] and confirm presence of a slot token string
+                    # 4) Search for ANY slot token in decoded batch[0]
                     text0 = tokenizer.decode(batch["input_ids"][0], skip_special_tokens=False)
-                    sample_tok = all_slot_tokens(targets_spec)[0]
-                    print("\nLooking for slot token in decoded batch[0]:", sample_tok)
-                    print("FOUND?" , sample_tok in text0)
-                    if sample_tok in text0:
-                        pos = text0.find(sample_tok)
-                        print("Context around first slot token occurrence:")
-                        print(text0[max(0, pos-200):pos+200])
+                    all_st = all_slot_tokens(targets_spec)
+                    found_tok = None
+                    for _st in all_st:
+                        if _st in text0:
+                            found_tok = _st
+                            break
+                    found_any = found_tok is not None
+                    print(f"\nAny slot token in decoded batch[0]? {found_any}")
+                    if found_any:
+                        print(f"  first found: {found_tok}")
+                        pos = text0.find(found_tok)
+                        print(f"  context [{max(0,pos-150)}:{pos+150}]:")
+                        print(f"  {text0[max(0,pos-150):pos+150]}")
+                    else:
+                        print("  No slot tokens found in decoded batch[0].")
+                    decoded_tail = text0[-1500:]
+                    print(f"\nDecoded batch[0] tail (last 1500 chars):")
+                    print(decoded_tail)
             
                 print("=" * 100 + "\n")
             
