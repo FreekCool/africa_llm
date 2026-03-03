@@ -36,17 +36,18 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         self,
         *args,
         targets_spec=None,
-        sft_config=None,               # ✅ IMPORTANT: forward into SFTTrainer
         normalize_by_logK=True,        # optional: normalize each task loss by log(K)
         debug_once=False,              # optional: print one-time debug info about batch coverage
         **kwargs,
     ):
-        # Ensure labels_by_target isn't dropped by HF Trainer column pruning
-        # If caller did not set it, force it (safe for this custom setup).
+        # Ensure labels_by_target isn't dropped by HF Trainer column pruning.
         if "args" in kwargs and getattr(kwargs["args"], "remove_unused_columns", None) is True:
             kwargs["args"].remove_unused_columns = False
 
-        super().__init__(*args, sft_config=sft_config, **kwargs)
+        # NOTE: This TRL version does NOT support an explicit `sft_config`
+        # argument on SFTTrainer.__init__, so we only forward standard kwargs
+        # such as max_seq_length, dataset_text_field, packing, etc.
+        super().__init__(*args, **kwargs)
 
         self.targets_spec = targets_spec or {}
         self.normalize_by_logK = normalize_by_logK

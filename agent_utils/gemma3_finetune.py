@@ -371,18 +371,12 @@ def run_fine_tuned_gemma3(
             use_slot_loss = targets_spec is not None
 
             if use_slot_loss:
-                # Use the same logical length for both TRL's SFTConfig and the
-                # constructor-level max_seq_length, so we never silently fall
-                # back to the default 1024 inside TRL.
+                # Use a single max_seq_length for this TRL version, which still
+                # reads it directly from the constructor kwargs (default 1024 if
+                # not provided).
                 sft_max_seq = max_tokens if max_tokens is not None else 4096
 
                 print(f"[SLOT-LOSS] Using max_seq_length={sft_max_seq}")
-
-                sft_config = SFTConfig(
-                    max_seq_length=sft_max_seq,
-                    dataset_text_field="text",
-                    packing=False,
-                )
 
                 collator = SlotLossCollator(tokenizer, targets_spec)
 
@@ -394,9 +388,6 @@ def run_fine_tuned_gemma3(
                     args=training_params,
                     data_collator=collator,
                     targets_spec=targets_spec,
-                    sft_config=sft_config,
-                    # Also pass max_seq_length explicitly in case this TRL
-                    # version still prefers the ctor arg over SFTConfig.
                     max_seq_length=sft_max_seq,
                     dataset_text_field="text",
                     packing=False,
