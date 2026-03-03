@@ -113,6 +113,7 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
 
         # Per-target losses (kept for logging)
         per_target_logs = {}
+        total_ntok_all_targets = 0
 
         for t, lab in labels_by_target.items():
             if not torch.is_tensor(lab):
@@ -126,6 +127,7 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
             n_tok = int(valid.sum().item())
             if n_tok == 0:
                 continue
+            total_ntok_all_targets += n_tok
 
             # Compute CE over full vocab, but ignore -100
             loss_sum = F.cross_entropy(
@@ -179,8 +181,18 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         # Emit logs (Trainer will include them at logging_steps)
         if per_target_logs:
             try:
-                # include #targets used for signal
+                # include #targets used and basic supervision density stats
                 per_target_logs["debug/targets_used"] = float(n_used)
+                B = float(shift_logits.size(0))
+                per_target_logs["debug/ntok_total"] = float(total_ntok_all_targets)
+                if n_used > 0:
+                    per_target_logs["debug/ntok_per_target_mean"] = float(
+                        total_ntok_all_targets / n_used
+                    )
+                if B > 0:
+                    per_target_logs["debug/ntok_per_seq_mean"] = float(
+                        total_ntok_all_targets / B
+                    )
                 self.log(per_target_logs)
             except Exception:
                 pass

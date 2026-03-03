@@ -538,9 +538,24 @@ def set_training_params_llama(seed, batch_size, learning_rate):
     )
 
 
-def set_training_params_gemma(seed, batch_size, learning_rate, group_by_length=True):
+def set_training_params_gemma(
+    seed,
+    batch_size,
+    learning_rate,
+    group_by_length=True,
+    grad_accum_steps=4,
+):
+    """
+    Gemma-specific TrainingArguments.
+
+    Notes:
+      - We explicitly set gradient_accumulation_steps so you can keep
+        per-device batch_size small (e.g., 1) and still get an effective
+        batch size >1 without OOM.
+    """
     args = set_training_params_llama(seed, batch_size, learning_rate)
     args.group_by_length = group_by_length
+    args.gradient_accumulation_steps = grad_accum_steps
     return args
 
 
