@@ -1892,14 +1892,17 @@ _SLOT_RE = re.compile(r"<@([^=]+)=([^>]+)>")
 
 
 # Aliases to map prediction-time JSON keys back to canonical
-# target names used in ``targets_spec``. This lets evaluation
-# handle small schema mismatches without touching training.
+# target names used in ``targets_spec``. The model may follow
+# the prompt-example key names (which sometimes differ from
+# the targets_spec names).  This lets evaluation handle those
+# small schema mismatches without touching training.
 _EVAL_KEY_ALIASES: dict[str, list[str]] = {
-    # Canonical key : list of possible prediction-time variants
     "resource_distribution_for_gender": [
         "resource_distribution_gender",
-        "resource_distribution_for_gender",
         "resource_distribution_for_gender1",
+    ],
+    "resource_distribution_for_whom1": [
+        "resource_distribution_for_whom_region_or_ethnicity",
     ],
 }
 
@@ -1960,21 +1963,47 @@ def parse_slot_json_to_values(pred_json_str: str, targets_spec: dict) -> dict:
 
         raw = d.get(t, None)
         if raw is None or raw == "null":
-            out[t] = None
+            # Apply same null-fallback as training / gold parser so
+            # null predictions and null gold values compare correctly.
+            allowed_strs = {str(a) for a in spec.get("allowed", [])}
+            if "99" in allowed_strs:
+                out[t] = 99
+            elif "-1" in allowed_strs:
+                out[t] = -1
+            else:
+                out[t] = None
             continue
 
-        raw_str = str(raw)
+        raw_str = str(raw).strip()
+
+        # Empty strings / whitespace-only → treat as null
+        if raw_str in ("", '""', "''"):
+            allowed_strs = {str(a) for a in spec.get("allowed", [])}
+            if "99" in allowed_strs:
+                out[t] = 99
+            elif "-1" in allowed_strs:
+                out[t] = -1
+            else:
+                out[t] = None
+            continue
+
         sm = _SLOT_RE.search(raw_str)
         if sm:
             v_str = sm.group(2)
         else:
-            v_str = raw_str.strip().strip('"').strip("'")
+            v_str = raw_str.strip('"').strip("'")
 
         try:
             v_float = float(v_str)
             out[t] = int(v_float) if v_float == int(v_float) else v_float
         except (ValueError, TypeError):
-            out[t] = v_str
+            # Check if value is actually in the allowed set
+            allowed = spec.get("allowed", [])
+            allowed_strs = {str(a) for a in allowed}
+            if v_str in allowed_strs:
+                out[t] = v_str
+            else:
+                out[t] = None
 
     return out
 

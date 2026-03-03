@@ -4,6 +4,9 @@
 #   • Per-target CE loss (binary vs multiclass aware via restricted logits)
 #   • Standardised / comparable losses via log(K) normalisation
 #   • One combined scalar loss for backprop (configurable aggregation)
+#   • Full-text LM loss regulariser so the model learns to *generate*
+#     the slot-token JSON format (not just predict the right class at
+#     masked positions)
 #   • Per-target metrics logged to TensorBoard via callback
 #   • Coverage diagnostics for first N batches
 
@@ -52,7 +55,14 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
              "mean"           – average over used targets (default)
              "token_weighted" – weight each target by its ntok
              "custom"         – supply target_weights dict
-        4. All metrics are logged under both short keys (loss/{t}) and
+        4. Full-text LM loss regulariser (``full_text_loss_weight``):
+           The slot-only loss teaches which class is correct at each
+           position but does NOT train the model to generate the
+           surrounding JSON / slot-token syntax.  Adding a weighted
+           standard LM loss on the complete assistant response teaches
+           the model the full generation pattern so it actually outputs
+           ``<@politics=1>`` at inference time, not plain integers.
+        5. All metrics are logged under both short keys (loss/{t}) and
            namespaced keys (train/loss/{t}) for TensorBoard grouping.
 
     K policy: K = len(allowed) everywhere.
@@ -66,6 +76,7 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         restrict_to_target_token_ids=True,
         aggregate="mean",
         target_weights=None,
+        full_text_loss_weight=0.1,
         **kwargs,
     ):
         if "args" in kwargs and getattr(kwargs["args"], "remove_unused_columns", None) is True:
@@ -78,6 +89,7 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         self.restrict_to_target_token_ids = restrict_to_target_token_ids
         self.aggregate = aggregate
         self.target_weights = target_weights or {}
+        self.full_text_loss_weight = full_text_loss_weight
 
         self._last_per_target_logs: dict = {}
         self._coverage_batches_logged = 0
@@ -121,6 +133,7 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         print("SLOT-LOSS K TABLE  (K = len(allowed) for every target)")
         print(f"  restrict_to_target_token_ids = {self.restrict_to_target_token_ids}")
         print(f"  aggregate = {self.aggregate}")
+        print(f"  full_text_loss_weight = {self.full_text_loss_weight}")
         print("=" * 80)
         for t, spec in self.targets_spec.items():
             if spec.get("type") not in ("binary", "multiclass"):
@@ -231,10 +244,15 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         n_used = len(per_target_loss_t)
         total_ntok = sum(per_target_ntok.values())
 
+        # ── Full-text LM loss (teaches the model to generate the
+        #    slot-token JSON format, not just predict at masked positions)
+        lm_loss = outputs.loss  # already computed by the model from `labels`
+        lm_loss_val = float(lm_loss.detach().item()) if lm_loss is not None else 0.0
+
         # ── Aggregation into one combined loss ────────────────────
         if n_used > 0:
             if self.aggregate == "token_weighted":
-                loss = sum(
+                slot_loss = sum(
                     per_target_loss_t[t] * per_target_ntok[t]
                     for t in per_target_loss_t
                 ) / max(total_ntok, 1)
@@ -247,28 +265,28 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
                     self.target_weights.get(t, 1.0)
                     for t in per_target_loss_t
                 )
-                loss = wsum / max(wdenom, 1e-8)
+                slot_loss = wsum / max(wdenom, 1e-8)
             else:
-                loss = sum(per_target_loss_t.values()) / n_used
+                slot_loss = sum(per_target_loss_t.values()) / n_used
+
+            loss = slot_loss
+            if self.full_text_loss_weight > 0 and lm_loss is not None:
+                loss = slot_loss + self.full_text_loss_weight * lm_loss
         else:
-            # Fallback: no supervised targets → normal LM loss
-            if "labels" not in inputs:
-                ids = inputs["input_ids"]
-                lab = ids.clone()
-                pad = getattr(self.tokenizer, "pad_token_id", None)
-                if pad is not None:
-                    lab[lab == pad] = -100
-                inputs["labels"] = lab
-            fb_out = model(**inputs)
-            fb_logits = fb_out.logits[:, :-1, :].contiguous()
-            fb_labels = inputs["labels"][:, 1:].contiguous()
-            loss = F.cross_entropy(
-                fb_logits.view(-1, fb_logits.size(-1)),
-                fb_labels.view(-1),
-                ignore_index=-100,
-                reduction="mean",
-            )
-            outputs = fb_out
+            # Fallback: no supervised targets → pure LM loss
+            if lm_loss is not None:
+                loss = lm_loss
+            else:
+                if "labels" not in inputs:
+                    ids = inputs["input_ids"]
+                    lab = ids.clone()
+                    pad = getattr(self.tokenizer, "pad_token_id", None)
+                    if pad is not None:
+                        lab[lab == pad] = -100
+                    inputs["labels"] = lab
+                fb_out = model(**inputs)
+                loss = fb_out.loss
+                outputs = fb_out
 
         # ── Logging ───────────────────────────────────────────────
         step_logs["slot/targets_used"] = float(n_used)
@@ -278,6 +296,8 @@ class MultiTargetSlotSFTTrainer(SFTTrainer):
         if B > 0:
             step_logs["slot/ntok_per_seq_mean"] = float(total_ntok / B)
         step_logs["slot/loss_combined"] = float(loss.detach().cpu().item()) if n_used > 0 else 0.0
+        step_logs["slot/lm_loss"] = lm_loss_val
+        step_logs["slot/full_text_loss_weight"] = self.full_text_loss_weight
 
         # Add train/-namespaced aliases for TensorBoard grouping
         aliased: dict = {}

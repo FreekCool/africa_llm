@@ -271,29 +271,10 @@ def run_fine_tuned_gemma3(
             # =====================
             # 2) BUILD VAL PROMPTS + VAL DATASET
             # =====================
-            # For validation, we can afford to be a bit stricter about
-            # the required JSON schema so that the model is explicitly
-            # told to return *all* keys. Training still uses the base
-            # prompt so we do not change the optimisation objective.
-            eval_prompt = prompt
-            if targets_spec is not None:
-                schema_keys = [
-                    t for t, s in targets_spec.items()
-                    if s.get("type") in ("binary", "multiclass", "text")
-                ]
-                if schema_keys:
-                    schema_lines = [
-                        "Return your answer as a JSON object with exactly these keys (in any order):",
-                        ", ".join(f'\"{k}\"' for k in schema_keys),
-                        "",
-                        "For every binary or multiclass key, output the value as a slot token like "
-                        "\"<@politics=1>\" instead of a plain number.",
-                        "If a key is not applicable or unknown, still include it and use the appropriate "
-                        "unclear code (e.g. \"<@politics=99>\").",
-                        "Do not omit any keys; every key listed above must be present in the JSON.",
-                    ]
-                    eval_prompt = prompt + "\n\n" + "\n".join(schema_lines)
-
+            # Use the SAME prompt for validation as for training so the
+            # model sees in-distribution text.  Adding extra instructions
+            # at eval time that the model never saw during training is
+            # out-of-distribution and hurts generation quality.
             (
                 val_prompts,
                 val_texts,
@@ -308,7 +289,7 @@ def run_fine_tuned_gemma3(
                 tokenizer=tokenizer,
                 max_tokens=max_tokens,
                 text_col=text_col,
-                prompt=eval_prompt,
+                prompt=prompt,
                 answer_col=answer_col,
                 id_col=id_col,
             )
@@ -319,12 +300,12 @@ def run_fine_tuned_gemma3(
                 tokenizer=tokenizer,
                 max_tokens=max_tokens,
                 text_col=text_col,
-                prompt=eval_prompt,
+                prompt=prompt,
                 answer_col=answer_col,
                 id_col=id_col,
                 image_folder=image_folder if is_mm else None,
                 vlm_images_to_include=vlm_images_to_include,
-                targets_spec=targets_spec,          # ✅ ADD THIS
+                targets_spec=targets_spec,
             )
             print("Val dataset columns:", val_dataset.column_names)
 
@@ -415,6 +396,7 @@ def run_fine_tuned_gemma3(
                     targets_spec=targets_spec,
                     restrict_to_target_token_ids=True,
                     aggregate="mean",
+                    full_text_loss_weight=0.1,
                     max_seq_length=sft_max_seq,
                     dataset_text_field="text",
                     packing=False,
