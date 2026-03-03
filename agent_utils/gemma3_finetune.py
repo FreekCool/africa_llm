@@ -390,6 +390,8 @@ def run_fine_tuned_gemma3(
                     args=training_params,
                     data_collator=collator,
                     targets_spec=targets_spec,
+                    restrict_to_target_token_ids=True,
+                    aggregate="mean",
                     max_seq_length=sft_max_seq,
                     dataset_text_field="text",
                     packing=False,
@@ -498,7 +500,7 @@ def run_fine_tuned_gemma3(
                 # ----- SLOT-TOKEN VAL METRICS -----
                 if use_slot_loss and val_prompts:
                     try:
-                        slot_metrics, slot_df = run_slot_val_metrics(
+                        slot_metrics, slot_df, slot_flat = run_slot_val_metrics(
                             trainer=trainer,
                             tokenizer=tokenizer,
                             device=device,
@@ -509,6 +511,12 @@ def run_fine_tuned_gemma3(
                             max_examples=min(100, len(val_prompts)),
                             epoch=current_epoch,
                         )
+                        if slot_flat:
+                            trainer.log(slot_flat)
+                        if not slot_df.empty and results_folder:
+                            csv_name = f"slot_val_metrics_seed{train_val_seed}_lr{learning_rate}_epoch{current_epoch}.csv"
+                            slot_df.to_csv(os.path.join(results_folder, csv_name), index=False)
+                            print(f"[slot-val] Saved {csv_name}")
                     except Exception as e:
                         print(f"[WARN] slot val metrics failed: {e}")
 

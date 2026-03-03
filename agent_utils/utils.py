@@ -1891,21 +1891,34 @@ class DebugBatchCollator:
 _SLOT_RE = re.compile(r"<@([^=]+)=([^>]+)>")
 
 
+def _extract_last_json(text: str) -> str:
+    """Return the last ``{...}`` substring from *text*, or *text* itself."""
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def parse_slot_json_to_values(pred_json_str: str, targets_spec: dict) -> dict:
     """
     Parse a predicted assistant JSON that may contain slot tokens like
     ``"<@politics=1>"`` and return ``{target: value}`` with normalised
     values (ints where applicable, None for missing/null).
 
-    Robust against malformed JSON: falls back to regex extraction.
+    Robust against malformed JSON: first tries the last ``{…}`` sub-
+    string, then falls back to regex extraction over the whole text.
     """
     out: dict = {}
+    raw_text = str(pred_json_str) if pred_json_str is not None else ""
+
+    json_substr = _extract_last_json(raw_text)
 
     try:
-        d = json.loads(pred_json_str) if isinstance(pred_json_str, str) else dict(pred_json_str)
+        d = json.loads(json_substr)
     except (json.JSONDecodeError, TypeError, ValueError):
         d = {}
-        for m in _SLOT_RE.finditer(str(pred_json_str)):
+        for m in _SLOT_RE.finditer(raw_text):
             d[m.group(1)] = f"<@{m.group(1)}={m.group(2)}>"
 
     for t, spec in targets_spec.items():
@@ -1981,9 +1994,15 @@ def run_slot_val_metrics(
     Generate on a subset of val prompts, parse predicted slot-token JSON,
     compare against gold, and print + return per-target metrics.
 
-    Returns a dict ``{target: {acc, f1, n, coverage}}`` and a summary
-    DataFrame.
+    Returns
+    -------
+    results : dict  {target: {acc, f1, n, coverage}}
+    df      : pd.DataFrame  one row per target
+    flat    : dict  flat metrics dict with keys like ``val/acc/{t}``,
+              ``val/f1_macro/{t}``, ``val/coverage/{t}``, ``val/n_eval/{t}``,
+              ``val/json_parse_failure_rate`` — ready for ``trainer.log()``.
     """
+    import torch as _torch
     from sklearn.metrics import precision_recall_fscore_support as prfs
 
     n = min(max_examples, len(val_prompts))
@@ -2001,7 +2020,7 @@ def run_slot_val_metrics(
         if attn is not None:
             attn = attn.to(device)
 
-        with torch.no_grad():
+        with _torch.no_grad():
             gen = trainer.model.generate(
                 input_ids=input_ids,
                 attention_mask=attn,
@@ -2029,6 +2048,9 @@ def run_slot_val_metrics(
 
     results = {}
     rows = []
+    flat: dict = {}
+
+    flat["val/json_parse_failure_rate"] = json_failures / max(n, 1)
 
     for t, spec in targets_spec.items():
         if spec.get("type") not in ("binary", "multiclass"):
@@ -2036,32 +2058,47 @@ def run_slot_val_metrics(
 
         y_true = []
         y_pred = []
-        present = 0
+        pred_present = 0
+        gold_present = 0
         for pv, gv in zip(pred_vals, gold_vals):
             g = gv.get(t)
             p = pv.get(t)
             if g is None:
                 continue
-            present += 1
+            gold_present += 1
             y_true.append(str(g))
-            y_pred.append(str(p) if p is not None else "__NONE__")
+            p_str = str(p) if p is not None else "__NONE__"
+            y_pred.append(p_str)
+            if p is not None:
+                pred_present += 1
+
+        # Prediction-side coverage: fraction where model produced a value
+        pred_cov = pred_present / max(gold_present, 1) if gold_present > 0 else 0.0
 
         if not y_true:
             results[t] = {"acc": None, "f1": None, "n": 0, "coverage": 0.0}
+            flat[f"val/acc/{t}"] = 0.0
+            flat[f"val/f1_macro/{t}"] = 0.0
+            flat[f"val/coverage/{t}"] = 0.0
+            flat[f"val/n_eval/{t}"] = 0
             continue
 
         acc = sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true)
         _, _, f1, _ = prfs(y_true, y_pred, average="macro", zero_division=0)
 
-        results[t] = {"acc": acc, "f1": f1, "n": present, "coverage": present / n}
+        results[t] = {"acc": acc, "f1": f1, "n": gold_present, "coverage": pred_cov}
+        flat[f"val/acc/{t}"] = round(acc, 4)
+        flat[f"val/f1_macro/{t}"] = round(f1, 4)
+        flat[f"val/coverage/{t}"] = round(pred_cov, 3)
+        flat[f"val/n_eval/{t}"] = gold_present
         rows.append({
             "epoch": epoch,
             "target": t,
             "type": spec.get("type"),
             "acc": round(acc, 4),
             "f1_macro": round(f1, 4),
-            "n_eval": present,
-            "coverage": round(present / n, 3),
+            "n_eval": gold_present,
+            "coverage": round(pred_cov, 3),
         })
 
     if rows:
@@ -2075,4 +2112,4 @@ def run_slot_val_metrics(
         df = pd.DataFrame()
         print(f"[slot-val] No evaluable targets at epoch {epoch}")
 
-    return results, df
+    return results, df, flat
