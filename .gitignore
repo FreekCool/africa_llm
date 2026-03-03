@@ -1,0 +1,45 @@
+# caches / python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+
+# envs
+.venv/
+venv/
+env/
+
+# results
+results/
+
+# secrets
+.env
+*.key
+
+# data / models / outputs (common "too big" folders)
+data/
+datasets/
+raw/
+processed/
+checkpoints/
+models/
+runs/
+wandb/
+mlruns/
+logs/
+outputs/
+results/
+
+# large binaries
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.h5
+*.pkl
+*.joblib
+
+# misc
+.DS_Store
