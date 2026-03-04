@@ -257,6 +257,19 @@ def run_simple_gemma3(
                 max_seq_length=max_tokens,
             )
 
+            # ── Print 1–2 full training examples before training ───────
+            n_print = min(2, len(dataset))
+            print("\n" + "=" * 80)
+            print(f"TRAINING EXAMPLES (first {n_print} full strings)")
+            print("=" * 80)
+            for i in range(n_print):
+                full_text = dataset["text"][i]
+                n_tok = _token_len(full_text, tokenizer)
+                print(f"\n--- Example {i} ({len(full_text)} chars, {n_tok} tokens) ---\n")
+                print(full_text)
+                print()
+            print("=" * 80 + "\n")
+
             # ── 2) Load model ─────────────────────────────────────────
             print(f"Loading model: {original_model}")
             model = AutoModelForCausalLM.from_pretrained(
