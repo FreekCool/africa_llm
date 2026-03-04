@@ -135,6 +135,114 @@ def build_simple_sft_dataset(
     return Dataset.from_dict({"text": texts})
 
 
+def build_simple_val_prompts(
+    df,
+    tokenizer,
+    prompt_template: str,
+    text_col: str,
+    answer_col: str,
+    max_seq_length: int = 4096,
+):
+    """
+    Build validation prompts (user turn only, with transcript) and gold answers.
+    Same truncation logic as build_simple_sft_dataset so prompts match training.
+    Returns (val_prompts, val_gold_raw) for inference.
+    """
+    prompts = []
+    gold_raw = []
+    safety_margin = 48
+
+    for _, row in df.iterrows():
+        raw_text = row[text_col]
+        if pd.isna(raw_text):
+            continue
+        answer = row[answer_col]
+        if pd.isna(answer):
+            continue
+        answer_str = str(answer)
+
+        instruction_empty = insert_text_once(prompt_template, "")
+        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str)
+        overhead = _token_len(full_empty, tokenizer)
+        transcript_budget = max(max_seq_length - overhead - safety_margin, 0)
+
+        all_tokens = tokenizer.tokenize(str(raw_text))
+        trunc_tokens = all_tokens[:transcript_budget]
+        trunc_text = tokenizer.convert_tokens_to_string(trunc_tokens)
+        instruction = insert_text_once(prompt_template, trunc_text)
+
+        # Prompt only (user turn + generation prompt), no assistant answer
+        prompt_only = _build_chat_text_simple(tokenizer, instruction, answer=None)
+        prompts.append(prompt_only)
+        gold_raw.append(answer_str)
+
+    return prompts, gold_raw
+
+
+def run_simple_val_inference(
+    trainer,
+    tokenizer,
+    device,
+    val_prompts,
+    val_gold_raw,
+    max_new_tokens: int = 400,
+    max_examples: int = 5,
+):
+    """
+    Run generation on validation prompts and print results (no evaluation).
+    Mirrors the validation step in llama3_finetune.py but only prints raw output.
+    """
+    n = min(max_examples, len(val_prompts), len(val_gold_raw))
+    if n == 0:
+        print("[val-inference] No validation examples to run.")
+        return
+
+    print("\n" + "=" * 80)
+    print(f"VALIDATION INFERENCE (first {n} examples, max_new_tokens={max_new_tokens})")
+    print("=" * 80)
+
+    pad_token_id = getattr(tokenizer, "pad_token_id", None) or getattr(
+        tokenizer, "eos_token_id", None
+    )
+    trainer.model.eval()
+
+    for i in range(n):
+        prompt_text = val_prompts[i]
+        gold = val_gold_raw[i]
+
+        enc = tokenizer(
+            prompt_text,
+            return_tensors="pt",
+            padding=False,
+            truncation=False,
+        )
+        input_ids = enc["input_ids"].to(device)
+        attention_mask = enc.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
+
+        with torch.no_grad():
+            generated = trainer.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                num_return_sequences=1,
+                pad_token_id=pad_token_id,
+            )
+
+        input_len = input_ids.shape[-1]
+        new_tokens = generated[0, input_len:].detach().cpu()
+        raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+        print(f"\n--- Example {i + 1}/{n} ---")
+        print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
+        print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
+        print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
+
+    print("=" * 80 + "\n")
+
+
 # ── main entry point ──────────────────────────────────────────────────
 
 def run_simple_gemma3(
@@ -157,6 +265,7 @@ def run_simple_gemma3(
     learning_rates=(1e-4,),
     grad_accum_steps=4,
     model_id="google/gemma-3-12b-it",
+    max_val_infer=5,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
@@ -257,6 +366,17 @@ def run_simple_gemma3(
                 max_seq_length=max_tokens,
             )
 
+            # Validation prompts for inference (same truncation as train)
+            val_prompts, val_gold_raw = build_simple_val_prompts(
+                df=val_rows,
+                tokenizer=tokenizer,
+                prompt_template=prompt,
+                text_col=text_col,
+                answer_col=answer_col,
+                max_seq_length=max_tokens,
+            )
+            print(f"[simple-sft] Built {len(val_prompts)} validation prompts for inference")
+
             # ── Print 1–2 full training examples before training ───────
             n_print = min(2, len(dataset))
             print("\n" + "=" * 80)
@@ -353,6 +473,17 @@ def run_simple_gemma3(
 
                 if pynvml_mod and handle:
                     print_gpu_memory(handle, pynvml_mod)
+
+                # Validation inference: generate on val prompts and print (no metrics)
+                run_simple_val_inference(
+                    trainer=trainer,
+                    tokenizer=tokenizer,
+                    device=device,
+                    val_prompts=val_prompts,
+                    val_gold_raw=val_gold_raw,
+                    max_new_tokens=max_new_tokens,
+                    max_examples=max_val_infer,
+                )
 
                 # Early stopping
                 if eval_loss is not None:
