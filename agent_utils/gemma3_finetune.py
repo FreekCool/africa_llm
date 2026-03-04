@@ -137,7 +137,7 @@ def run_fine_tuned_gemma3(
     print("Starting to fine-tune Gemma-3")
 
     if local_model is None:
-        model_name = "google/gemma-3-4b-it"
+        model_name = "google/gemma-3-12b-it"
         loaded_locally = False
         processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir)
         original_model = model_name
@@ -146,9 +146,9 @@ def run_fine_tuned_gemma3(
         print("Loading local model")
         loaded_locally = True
         processor = AutoProcessor.from_pretrained(
-            "google/gemma-3-4b-it", cache_dir=cache_dir
+            "google/gemma-3-12b-it", cache_dir=cache_dir
         )
-        original_model = "google/gemma-3-4b-it"
+        original_model = "google/gemma-3-12b-it"
 
     # dtype consistent with llama file
     compute_dtype = getattr(torch, "float16")
@@ -509,7 +509,12 @@ def run_fine_tuned_gemma3(
                 # the minimum needed from the number of targets.
                 if use_slot_loss and val_prompts:
                     try:
-                        slot_metrics, slot_df, slot_flat = run_slot_val_metrics(
+                        (
+                            slot_metrics,
+                            slot_df,
+                            slot_flat,
+                            slot_diag_df,
+                        ) = run_slot_val_metrics(
                             trainer=trainer,
                             tokenizer=tokenizer,
                             device=device,
@@ -521,14 +526,23 @@ def run_fine_tuned_gemma3(
                         )
                         if slot_flat:
                             trainer.log(slot_flat)
-                        if not slot_df.empty and results_folder:
-                            csv_name = (
-                                f"slot_val_metrics_{mtype}_seed{train_val_seed}"
-                                f"_lr{learning_rate}_epoch{current_epoch}.csv"
-                            )
-                            csv_path = os.path.join(results_folder, csv_name)
-                            slot_df.to_csv(csv_path, index=False)
-                            print(f"[slot-val] Saved {csv_path}")
+                        if results_folder:
+                            if not slot_df.empty:
+                                csv_name = (
+                                    f"slot_val_metrics_{mtype}_seed{train_val_seed}"
+                                    f"_lr{learning_rate}_epoch{current_epoch}.csv"
+                                )
+                                csv_path = os.path.join(results_folder, csv_name)
+                                slot_df.to_csv(csv_path, index=False)
+                                print(f"[slot-val] Saved {csv_path}")
+                            if not slot_diag_df.empty:
+                                diag_name = (
+                                    f"slot_val_diagnostics_{mtype}_seed{train_val_seed}"
+                                    f"_lr{learning_rate}_epoch{current_epoch}.csv"
+                                )
+                                diag_path = os.path.join(results_folder, diag_name)
+                                slot_diag_df.to_csv(diag_path, index=False)
+                                print(f"[slot-val] Saved diagnostics {diag_path}")
                     except Exception as e:
                         import traceback
                         print(f"[WARN] slot val metrics failed: {e}")

@@ -2072,6 +2072,15 @@ def run_slot_val_metrics(
         ``val/acc/{t}``, ``val/f1/{t}``, ``val/gold_coverage/{t}``,
         ``val/pred_coverage/{t}``, ``val/slot_token_coverage/{t}``,
         ``val/n_eval/{t}``, ``val/json_parse_failure_rate``, etc.
+    diagnostics_df : pd.DataFrame
+        Per-example, per-target diagnostics with columns like::
+
+            epoch, example_idx, target, gold, pred_parsed, pred_raw,
+            gold_present, pred_key_present, alias_used,
+            parsed_nonnull, slot_token_present
+
+        This is ideal for saving to CSV so you can manually inspect all
+        cases where the model did not answer within scope.
     """
     import torch as _torch
     from collections import Counter, defaultdict
@@ -2223,6 +2232,9 @@ def run_slot_val_metrics(
         }
     )
 
+    # Per-example diagnostics rows
+    diag_rows: list[dict] = []
+
     for t, spec in targets_spec.items():
         if spec.get("type") not in ("binary", "multiclass"):
             continue
@@ -2232,7 +2244,7 @@ def run_slot_val_metrics(
 
         aliases = _EVAL_KEY_ALIASES.get(t, [])
 
-        for pv, gv, rd in zip(pred_vals, gold_vals, raw_pred_dicts):
+        for idx, (pv, gv, rd) in enumerate(zip(pred_vals, gold_vals, raw_pred_dicts)):
             g = gv.get(t)
             if g is not None:
                 diag[t]["gold_present"] += 1
@@ -2270,6 +2282,25 @@ def run_slot_val_metrics(
             y_true.append(str(g))
             p_str = str(p) if p is not None else "__NONE__"
             y_pred.append(p_str)
+
+            # Detailed per-example diagnostics row
+            diag_rows.append(
+                {
+                    "epoch": epoch,
+                    "example_idx": idx,
+                    "target": t,
+                    "gold": g,
+                    "pred_parsed": p,
+                    "pred_raw": raw_val,
+                    "gold_present": g is not None,
+                    "pred_key_present": key_present,
+                    "alias_used": alias_hit,
+                    "parsed_nonnull": p is not None,
+                    "slot_token_present": bool(
+                        raw_val is not None and _SLOT_RE.search(str(raw_val))
+                    ),
+                }
+            )
 
         gold_present = diag[t]["gold_present"]
         gold_cov = gold_present / max(n, 1)
@@ -2330,6 +2361,7 @@ def run_slot_val_metrics(
     # ── Summary table ─────────────────────────────────────────────────
     if rows:
         df = pd.DataFrame(rows)
+        diagnostics_df = pd.DataFrame(diag_rows) if diag_rows else pd.DataFrame()
         print(f"\n{'='*80}")
         print(
             f"SLOT-TOKEN VAL METRICS  (epoch={epoch}, n={n}, "
@@ -2353,6 +2385,7 @@ def run_slot_val_metrics(
         flat["val/slot_token_coverage_mean"] = round(mean_slot_cov, 3)
     else:
         df = pd.DataFrame()
+        diagnostics_df = pd.DataFrame()
         print(f"[slot-val] No evaluable targets at epoch {epoch}")
 
     # ── Schema mismatch + zero-coverage diagnostics ───────────────────
@@ -2398,4 +2431,4 @@ def run_slot_val_metrics(
             if similar:
                 print("    similar unknown keys:", similar)
 
-    return results, df, flat
+    return results, df, flat, diagnostics_df
