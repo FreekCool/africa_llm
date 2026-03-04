@@ -82,6 +82,7 @@ def train_validate(
         "fine_tuned_gemma3",
         "ilora_llama3",
         "ilora_gemma3",
+        "simple_gemma3",
     ]
 
     if mtype not in SUPPORTED_MODELS:
@@ -192,6 +193,30 @@ def train_validate(
             epochs=epochs,
             learning_rates=learning_rates,
             targets_spec=targets_spec,
+        )
+
+    if mtype == "simple_gemma3":
+        # Minimal Gemma-3 SFT on raw JSON answers (no slot tokens, no custom loss).
+        from .gemma3_finetune_simple import run_simple_gemma3
+
+        return run_simple_gemma3(
+            train_df=train_df,
+            test_df=test_df,
+            text_col=text_col,
+            answer_col=answer_col,
+            prompt=prompt,
+            train_val_seeds=train_val_seeds,
+            val_size=val_size,
+            results_folder=results_folder,
+            model_dir=model_dir,
+            max_tokens=max_tokens,
+            batch_size=batch_size,
+            max_new_tokens=max_new_tokens,
+            cache_dir=cache_dir,
+            local_model=local_model,
+            early_stopping_patience=early_stopping_patience,
+            epochs=epochs,
+            learning_rates=learning_rates,
         )
 
     if mtype == "ilora_llama3":
