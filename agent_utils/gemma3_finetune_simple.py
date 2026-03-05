@@ -19,8 +19,10 @@ import datetime
 
 import torch
 import pandas as pd
+from collections import defaultdict
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 from trl import SFTTrainer
 from transformers import (
     AutoTokenizer,
@@ -194,14 +196,19 @@ def _extract_pred_json(raw_completion: str):
 
     s = raw_completion.strip()
 
-    # Strip markdown fences if present
+    # Robustly strip leading/trailing markdown fences like:
+    # ```json\n{...}\n```
     if s.startswith("```"):
-        # drop first fence and everything up to the first newline
-        parts = s.split("```", 2)
-        if len(parts) >= 2:
-            s = parts[-1].strip()
+        # drop first line (``` or ```json)
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 :].lstrip()
+        # drop trailing ``` if present
+        fence_pos = s.rfind("```")
+        if fence_pos != -1:
+            s = s[:fence_pos].rstrip()
 
-    # Find JSON braces
+    # Find JSON braces in the remaining text
     start = s.find("{")
     end = s.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -224,16 +231,22 @@ def run_simple_val_inference(
     max_examples: int = 5,
 ):
     """
-    Run generation on validation prompts and print results (no evaluation).
-    Mirrors the validation step in llama3_finetune.py but only prints raw output.
+    Run generation on validation prompts, print a few examples, and compute
+    simple per-target metrics (accuracy, precision, recall, F1).
     """
-    n = min(max_examples, len(val_prompts), len(val_gold_raw))
-    if n == 0:
+    N = min(len(val_prompts), len(val_gold_raw))
+    if N == 0:
         print("[val-inference] No validation examples to run.")
         return
 
+    n_print = min(max_examples, N)
+
+    # storage for metrics
+    per_target_true = defaultdict(list)
+    per_target_pred = defaultdict(list)
+
     print("\n" + "=" * 80)
-    print(f"VALIDATION INFERENCE (first {n} examples, max_new_tokens={max_new_tokens})")
+    print(f"VALIDATION INFERENCE (first {n_print} examples, max_new_tokens={max_new_tokens})")
     print("=" * 80)
 
     pad_token_id = getattr(tokenizer, "pad_token_id", None) or getattr(
@@ -241,7 +254,7 @@ def run_simple_val_inference(
     )
     trainer.model.eval()
 
-    for i in range(n):
+    for i in range(N):
         prompt_text = val_prompts[i]
         gold = val_gold_raw[i]
 
@@ -270,18 +283,78 @@ def run_simple_val_inference(
         new_tokens = generated[0, input_len:].detach().cpu()
         raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-        print(f"\n--- Example {i + 1}/{n} ---")
-        print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
-        print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
-        print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
+        # Pretty-print only for the first n_print examples
+        if i < n_print:
+            print(f"\n--- Example {i + 1}/{N} ---")
+            print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
+            print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
+            print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
 
         parsed = _extract_pred_json(raw_completion)
-        if parsed is not None:
-            # Pretty-print a compact one-line JSON of the prediction
-            pred_str = json.dumps(parsed, ensure_ascii=False)
-            print(f"PREDICTED_JSON: {pred_str[:800]}{'...' if len(pred_str) > 800 else ''}")
-        else:
-            print("PREDICTED_JSON: <failed to parse JSON from completion>")
+
+        # parse gold JSON
+        try:
+            gold_dict = json.loads(gold)
+        except Exception:
+            gold_dict = {}
+
+        # accumulate labels per target
+        if gold_dict:
+            for t, g_val in gold_dict.items():
+                if g_val is None:
+                    continue  # skip missing gold
+
+                # Normalize numeric labels (e.g. 1.0 -> 1)
+                if isinstance(g_val, float) and g_val.is_integer():
+                    g_val_norm = int(g_val)
+                else:
+                    g_val_norm = g_val
+
+                if parsed is not None and t in parsed:
+                    p_val = parsed[t]
+                    if isinstance(p_val, float) and p_val.is_integer():
+                        p_val_norm = int(p_val)
+                    else:
+                        p_val_norm = p_val
+                else:
+                    p_val_norm = "MISSING"
+
+                per_target_true[t].append(g_val_norm)
+                per_target_pred[t].append(p_val_norm)
+
+        if i < n_print:
+            if parsed is not None:
+                pred_str = json.dumps(parsed, ensure_ascii=False)
+                print(f"PREDICTED_JSON: {pred_str[:800]}{'...' if len(pred_str) > 800 else ''}")
+            else:
+                snippet = raw_completion.strip()
+                print(
+                    "PREDICTED_JSON: <failed to parse JSON> | "
+                    f"snippet={snippet[:200].replace(chr(10), ' ')}"
+                    f"{'...' if len(snippet) > 200 else ''}"
+                )
+
+    # ---- per-target metrics ----
+    print("\n" + "-" * 80)
+    print(f"VAL METRICS PER TARGET (N={N} examples with prompts)")
+    print("-" * 80)
+    header = f"{'target':25s} {'n':>5s} {'acc':>8s} {'prec':>8s} {'rec':>8s} {'f1':>8s}"
+    print(header)
+    print("-" * len(header))
+
+    for t in sorted(per_target_true.keys()):
+        y_true = per_target_true[t]
+        y_pred = per_target_pred[t]
+        if not y_true:
+            continue
+        acc = accuracy_score(y_true, y_pred)
+        prec, rec, f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average="macro", zero_division=0
+        )
+        print(
+            f"{t:25s} {len(y_true):5d} "
+            f"{acc:8.3f} {prec:8.3f} {rec:8.3f} {f1:8.3f}"
+        )
 
     print("=" * 80 + "\n")
 
@@ -307,7 +380,7 @@ def run_simple_gemma3(
     epochs=5,
     learning_rates=(1e-4,),
     grad_accum_steps=4,
-    model_id="google/gemma-3-12b-it",
+    model_id="google/gemma-3-27b-it",
     max_val_infer=5,
 ):
     """
