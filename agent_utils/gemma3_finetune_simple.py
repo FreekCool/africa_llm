@@ -337,22 +337,50 @@ def run_simple_val_inference(
     print("\n" + "-" * 80)
     print(f"VAL METRICS PER TARGET (N={N} examples with prompts)")
     print("-" * 80)
-    header = f"{'target':25s} {'n':>5s} {'acc':>8s} {'prec':>8s} {'rec':>8s} {'f1':>8s}"
+    header = (
+        f"{'target':25s} {'n':>5s} "
+        f"{'acc':>8s} {'prec':>8s} {'rec':>8s} {'f1':>8s} "
+        f"{'answered%':>10s} {'in_label%':>10s}"
+    )
     print(header)
     print("-" * len(header))
 
     for t in sorted(per_target_true.keys()):
-        y_true = per_target_true[t]
-        y_pred = per_target_pred[t]
-        if not y_true:
+        all_true = per_target_true[t]
+        all_pred = per_target_pred[t]
+        if not all_true:
             continue
-        acc = accuracy_score(y_true, y_pred)
-        prec, rec, f1, _ = precision_recall_fscore_support(
-            y_true, y_pred, average="macro", zero_division=0
-        )
+
+        # Filter to positions where we have a concrete prediction
+        pairs = [(g, p) for g, p in zip(all_true, all_pred) if p != "MISSING"]
+        n_gold = len(all_true)
+        n_answered = len(pairs)
+
+        answered_frac = n_answered / n_gold if n_gold > 0 else 0.0
+
+        # "Expected labels" = label set observed in gold for this target
+        gold_label_set = set(all_true)
+        n_in_label = sum(1 for _, p in pairs if p in gold_label_set)
+        in_label_frac = n_in_label / n_gold if n_gold > 0 else 0.0
+
+        if n_answered > 0:
+            y_true = [g for g, _ in pairs]
+            y_pred = [p for _, p in pairs]
+
+            try:
+                acc = accuracy_score(y_true, y_pred)
+                prec, rec, f1, _ = precision_recall_fscore_support(
+                    y_true, y_pred, average="macro", zero_division=0
+                )
+            except Exception:
+                acc = prec = rec = f1 = 0.0
+        else:
+            acc = prec = rec = f1 = 0.0
+
         print(
-            f"{t:25s} {len(y_true):5d} "
-            f"{acc:8.3f} {prec:8.3f} {rec:8.3f} {f1:8.3f}"
+            f"{t:25s} {n_gold:5d} "
+            f"{acc:8.3f} {prec:8.3f} {rec:8.3f} {f1:8.3f} "
+            f"{answered_frac*100:10.1f} {in_label_frac*100:10.1f}"
         )
 
     print("=" * 80 + "\n")
