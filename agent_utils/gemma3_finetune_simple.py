@@ -224,6 +224,11 @@ def run_simple_val_inference(
     val_gold_raw,
     max_new_tokens: int = 400,
     max_examples: int = 5,
+    results_folder: str | None = None,
+    mtype: str = "simple_gemma3",
+    learning_rate: float | None = None,
+    epoch: int | None = None,
+    seed: int | None = None,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -345,6 +350,8 @@ def run_simple_val_inference(
     print(header)
     print("-" * len(header))
 
+    rows = []
+
     for t in sorted(per_target_true.keys()):
         all_true = per_target_true[t]
         all_pred = per_target_pred[t]
@@ -383,7 +390,39 @@ def run_simple_val_inference(
             f"{answered_frac*100:10.1f} {in_label_frac*100:10.1f}"
         )
 
+        # Collect example-level answer statistics per target for CSV export
+        answers_in_label = sorted({str(p) for _, p in pairs if p in gold_label_set})
+        answers_out_label = sorted({str(p) for _, p in pairs if p not in gold_label_set})
+
+        rows.append(
+            {
+                "target": t,
+                "n_gold": n_gold,
+                "n_answered": n_answered,
+                "n_in_label": n_in_label,
+                "accuracy": acc,
+                "precision_macro": prec,
+                "recall_macro": rec,
+                "f1_macro": f1,
+                "answered_frac": answered_frac,
+                "in_label_frac": in_label_frac,
+                "answers_in_label": ";".join(answers_in_label),
+                "answers_out_of_label": ";".join(answers_out_label),
+            }
+        )
+
     print("=" * 80 + "\n")
+
+    # Optionally save metrics to CSV
+    if results_folder is not None and rows:
+        os.makedirs(results_folder, exist_ok=True)
+        lr_str = f"{learning_rate}" if learning_rate is not None else "na"
+        ep_str = f"{epoch}" if epoch is not None else "na"
+        seed_str = f"{seed}" if seed is not None else "na"
+        csv_name = f"{mtype}_val_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}.csv"
+        csv_path = os.path.join(results_folder, csv_name)
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+        print(f"[val-metrics] Saved per-target metrics to {csv_path}")
 
 
 # ── main entry point ──────────────────────────────────────────────────
@@ -626,6 +665,11 @@ def run_simple_gemma3(
                     val_gold_raw=val_gold_raw,
                     max_new_tokens=max_new_tokens,
                     max_examples=max_val_infer,
+                    results_folder=results_folder,
+                    mtype=mtype,
+                    learning_rate=learning_rate,
+                    epoch=ep,
+                    seed=train_val_seed,
                 )
 
                 # Early stopping
