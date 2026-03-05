@@ -179,6 +179,41 @@ def build_simple_val_prompts(
     return prompts, gold_raw
 
 
+def _extract_pred_json(raw_completion: str):
+    """
+    Best-effort extraction of a JSON object from the model's completion.
+
+    Handles common patterns like Markdown fences:
+      ```json
+      { ... }
+      ```
+    and returns a dict or None.
+    """
+    if not raw_completion:
+        return None
+
+    s = raw_completion.strip()
+
+    # Strip markdown fences if present
+    if s.startswith("```"):
+        # drop first fence and everything up to the first newline
+        parts = s.split("```", 2)
+        if len(parts) >= 2:
+            s = parts[-1].strip()
+
+    # Find JSON braces
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    snippet = s[start : end + 1]
+    try:
+        return json.loads(snippet)
+    except Exception:
+        return None
+
+
 def run_simple_val_inference(
     trainer,
     tokenizer,
@@ -239,6 +274,14 @@ def run_simple_val_inference(
         print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
         print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
         print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
+
+        parsed = _extract_pred_json(raw_completion)
+        if parsed is not None:
+            # Pretty-print a compact one-line JSON of the prediction
+            pred_str = json.dumps(parsed, ensure_ascii=False)
+            print(f"PREDICTED_JSON: {pred_str[:800]}{'...' if len(pred_str) > 800 else ''}")
+        else:
+            print("PREDICTED_JSON: <failed to parse JSON from completion>")
 
     print("=" * 80 + "\n")
 
