@@ -44,6 +44,7 @@ from .utils import (
     create_model_dirname,
     print_gpu_memory,
     insert_text_once,
+    _extract_last_json,  # robust JSON substring extractor used in main pipeline
 )
 
 
@@ -198,25 +199,19 @@ def _extract_pred_json(raw_completion: str):
 
     # Robustly strip leading/trailing markdown fences like:
     # ```json\n{...}\n```
-    if s.startswith("```"):
-        # drop first line (``` or ```json)
-        first_nl = s.find("\n")
-        if first_nl != -1:
-            s = s[first_nl + 1 :].lstrip()
-        # drop trailing ``` if present
-        fence_pos = s.rfind("```")
-        if fence_pos != -1:
-            s = s[:fence_pos].rstrip()
+    if "```" in s:
+        # keep only the part between the first and last fence
+        first_fence = s.find("```")
+        last_fence = s.rfind("```")
+        if first_fence != -1 and last_fence != -1 and last_fence > first_fence:
+            inner = s[first_fence + 3 : last_fence]
+            s = inner.strip()
 
-    # Find JSON braces in the remaining text
-    start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
+    # Use the robust helper from utils.py to get the last {...} block
+    candidate = _extract_last_json(s)
 
-    snippet = s[start : end + 1]
     try:
-        return json.loads(snippet)
+        return json.loads(candidate)
     except Exception:
         return None
 
