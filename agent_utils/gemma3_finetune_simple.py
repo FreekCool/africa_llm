@@ -329,6 +329,10 @@ def run_simple_val_inference(
                     f"{'...' if len(snippet) > 200 else ''}"
                 )
 
+        # Light progress indicator every 5 examples
+        if (i + 1) % 5 == 0 or i == N - 1:
+            print(f"[val-inference] processed {i + 1}/{N} validation examples")
+
     # ---- per-target metrics ----
     print("\n" + "-" * 80)
     print(f"VAL METRICS PER TARGET (N={N} examples with prompts)")
