@@ -139,6 +139,71 @@ def _precompute_prefix_kv(model, tokenizer, system_prompt, device):
     return out.past_key_values, prefix_len
 
 
+def _generate_with_prefix_cache(
+    model,
+    tokenizer,
+    suffix_ids: torch.Tensor,
+    prefix_kv,
+    prefix_len: int,
+    max_new_tokens: int,
+    pad_token_id: int | None,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Autoregressive generation using a precomputed prefix KV cache.
+    Only the suffix tokens are run through the model; then we decode one token at a time.
+    Returns a 1D tensor of new token ids (shape: (num_generated,)) on CPU.
+    """
+    eos_token_id = getattr(tokenizer, "eos_token_id", None) or pad_token_id
+    batch_size = suffix_ids.shape[0]
+    suffix_len = suffix_ids.shape[1]
+
+    # Prefill: forward the suffix with the prefix cache
+    position_ids = torch.arange(
+        prefix_len, prefix_len + suffix_len, dtype=torch.long, device=device
+    ).unsqueeze(0).expand(batch_size, -1)
+    with torch.no_grad():
+        outputs = model(
+            input_ids=suffix_ids,
+            position_ids=position_ids,
+            past_key_values=prefix_kv,
+            use_cache=True,
+        )
+    logits = outputs.logits  # (batch, suffix_len, vocab_size)
+    past_key_values = outputs.past_key_values
+
+    # Take the last position's logits to get the first generated token
+    next_token_logits = logits[:, -1, :]  # (batch, vocab_size)
+    next_tokens = next_token_logits.argmax(dim=-1, keepdim=True)  # (batch, 1)
+    generated = [next_tokens]
+
+    # Decode loop: one token at a time
+    cur_len = suffix_len + 1
+    for _ in range(max_new_tokens - 1):
+        next_token = next_tokens  # (batch, 1)
+        if eos_token_id is not None and (next_token == eos_token_id).all().item():
+            break
+        position_ids = torch.full(
+            (batch_size, 1), prefix_len + cur_len, dtype=torch.long, device=device
+        )
+        with torch.no_grad():
+            outputs = model(
+                input_ids=next_token,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+        logits = outputs.logits
+        past_key_values = outputs.past_key_values
+        next_tokens = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        generated.append(next_tokens)
+        cur_len += 1
+
+    # Stack: (batch, num_generated), then take row 0 and move to CPU
+    out = torch.cat(generated, dim=1)[0].detach().cpu()
+    return out
+
+
 def _clone_past_kv(past_kv):
     """Clone a KV cache so ``generate()`` can mutate the copy freely."""
     if past_kv is None:
@@ -190,6 +255,8 @@ def build_simple_sft_dataset(
     ``max_seq_length``.  No slot tokens, no special processing.
     """
     texts = []
+    instructions = []
+    answers = []
     safety_margin = 48
 
     for _, row in df.iterrows():
@@ -227,6 +294,8 @@ def build_simple_sft_dataset(
             full_text = _build_chat_text_simple(tokenizer, instruction, answer_str, system_prompt=system_prompt)
 
         texts.append(full_text)
+        instructions.append(instruction)
+        answers.append(answer_str)
 
     print(f"[simple-sft] Built {len(texts)} training examples "
           f"(max_seq_length={max_seq_length})")
@@ -244,7 +313,7 @@ def build_simple_sft_dataset(
                 )
         print(f"  tail: ...{texts[0][-400:]}")
 
-    return Dataset.from_dict({"text": texts})
+    return Dataset.from_dict({"text": texts, "instruction": instructions, "answer": answers})
 
 
 def build_simple_val_prompts(
@@ -436,32 +505,25 @@ def run_simple_val_inference(
             and full_ids.shape[-1] > prefix_len  # need at least one suffix token
         )
         if use_prefix_cache:
-            # Only forward the suffix tokens; the prefix is already in the
-            # KV cache.  generate() infers cache_position from the cache
-            # length so RoPE positions are correct automatically.
-            suffix_ids = full_ids[:, prefix_len:]
-            attn_mask = torch.ones(
-                1, prefix_len + suffix_ids.shape[-1],
-                dtype=torch.long, device=device,
-            )
             kv_clone = _clone_past_kv(prefix_kv)
+            suffix_len = full_ids.shape[-1] - prefix_len
+            suffix_ids = full_ids[:, prefix_len:].to(device)
+            new_tokens = _generate_with_prefix_cache(
+                model=trainer.model,
+                tokenizer=tokenizer,
+                suffix_ids=suffix_ids,
+                prefix_kv=kv_clone,
+                prefix_len=prefix_len,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=pad_token_id,
+                device=device,
+            )
+            raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
             if i == 0:
                 print(
-                    f"[prefix-cache] Inference: full_seq={full_ids.shape[-1]}, "
-                    f"prefix={prefix_len}, suffix={suffix_ids.shape[-1]} tokens "
-                    f"(skipping {prefix_len} cached tokens)"
+                    f"[prefix-cache] Inference: suffix_only={suffix_len} tokens "
+                    f"(prefix={prefix_len} cached)"
                 )
-            with torch.no_grad():
-                generated = trainer.model.generate(
-                    input_ids=suffix_ids,
-                    attention_mask=attn_mask,
-                    past_key_values=kv_clone,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    num_return_sequences=1,
-                    pad_token_id=pad_token_id,
-                )
-            decode_offset = suffix_ids.shape[-1]
         else:
             attention_mask = enc.get("attention_mask")
             if attention_mask is not None:
@@ -476,9 +538,8 @@ def run_simple_val_inference(
                     pad_token_id=pad_token_id,
                 )
             decode_offset = full_ids.shape[-1]
-
-        new_tokens = generated[0, decode_offset:].detach().cpu()
-        raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            new_tokens = generated[0, decode_offset:].detach().cpu()
+            raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
         # Pretty-print only for the first n_print examples
         if i < n_print:
@@ -868,18 +929,27 @@ def run_simple_gemma3(
             )
             print(f"[simple-sft] Built {len(val_prompts)} validation prompts for inference")
 
-            # ── Print 1–2 full training examples before training ───────
+            # ── Print 1–2 training examples with clear [SYSTEM] / [USER] / [ASSISTANT] ───────
             n_print = min(2, len(dataset))
             print("\n" + "=" * 80)
-            print(f"TRAINING EXAMPLES (first {n_print} full strings)")
-            if system_prompt:
-                print("(Structure: system [codebook] + user [template+post]; Gemma template folds system into first user turn.)")
+            print(f"TRAINING EXAMPLES (first {n_print})")
             print("=" * 80)
             for i in range(n_print):
                 full_text = dataset["text"][i]
                 n_tok = _token_len(full_text, tokenizer)
-                print(f"\n--- Example {i} ({len(full_text)} chars, {n_tok} tokens) ---\n")
-                print(full_text)
+                instruction = dataset["instruction"][i]
+                answer = dataset["answer"][i]
+                print(f"\n--- Example {i} (full SFT: {len(full_text)} chars, {n_tok} tokens) ---\n")
+                if system_prompt:
+                    sys_preview = system_prompt.strip()[:500] + "..." if len(system_prompt) > 500 else system_prompt.strip()
+                    print("[SYSTEM]")
+                    print(sys_preview)
+                    print()
+                print("[USER]")
+                print(instruction)
+                print()
+                print("[ASSISTANT]")
+                print(answer[:1200] + ("..." if len(answer) > 1200 else ""))
                 print()
             print("=" * 80 + "\n")
 
