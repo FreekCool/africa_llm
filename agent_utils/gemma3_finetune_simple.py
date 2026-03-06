@@ -125,26 +125,32 @@ def _clone_past_kv(past_kv):
     """Clone a KV cache so ``generate()`` can mutate the copy freely."""
     if past_kv is None:
         return None
+    import copy
     try:
         from transformers.cache_utils import DynamicCache
         if isinstance(past_kv, DynamicCache):
-            clone = DynamicCache()
-            for i in range(len(past_kv.key_cache)):
-                clone.update(
-                    past_kv.key_cache[i].clone(),
-                    past_kv.value_cache[i].clone(),
-                    i,
-                )
-            return clone
-    except ImportError:
+            # API varies by transformers version: key_cache/value_cache (old) vs _key_states/_value_states (new)
+            key_list = getattr(past_kv, "key_cache", None) or getattr(past_kv, "_key_states", None)
+            val_list = getattr(past_kv, "value_cache", None) or getattr(past_kv, "_value_states", None)
+            if key_list is not None and val_list is not None and len(key_list) == len(val_list):
+                clone = DynamicCache()
+                for i in range(len(key_list)):
+                    clone.update(key_list[i].clone(), val_list[i].clone(), i)
+                return clone
+    except Exception:
+        pass
+    try:
+        from transformers.cache_utils import DynamicCache
+        if isinstance(past_kv, DynamicCache):
+            return copy.deepcopy(past_kv)
+    except Exception:
         pass
     if isinstance(past_kv, (list, tuple)):
         return type(past_kv)(
             tuple(t.clone() for t in layer) if isinstance(layer, tuple)
-            else layer.clone() if hasattr(layer, "clone") else layer
+            else (layer.clone() if hasattr(layer, "clone") else layer)
             for layer in past_kv
         )
-    import copy
     return copy.deepcopy(past_kv)
 
 
