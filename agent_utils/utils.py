@@ -75,6 +75,7 @@ def train_validate(
     reg_weight=1.0,
     targets_spec=None,
     gemma_model="27b",  # for simple_gemma3: "4b" | "27b" or full HuggingFace model_id
+    system_prompt=None,  # static instructions placed in system role (enables KV prefix caching)
 ):
     SUPPORTED_MODELS = [
         "llama3",
@@ -220,6 +221,7 @@ def train_validate(
             learning_rates=learning_rates,
             gemma_model=gemma_model,
             targets_spec=targets_spec,
+            system_prompt=system_prompt,
         )
 
     if mtype == "ilora_llama3":

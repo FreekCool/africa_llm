@@ -50,9 +50,13 @@ from .utils import (
 
 # ── helpers ───────────────────────────────────────────────────────────
 
-def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None) -> str:
+def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
+                            system_prompt: str = None) -> str:
     """Build a chat-formatted string using the tokenizer's chat template."""
-    messages = [{"role": "user", "content": instruction}]
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": instruction})
     if answer is not None:
         messages.append({"role": "assistant", "content": answer})
 
@@ -63,7 +67,10 @@ def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None) -> 
             add_generation_prompt=(answer is None),
         )
     # Fallback for tokenizers without chat templates
-    text = f"<|user|>\n{instruction}"
+    text = ""
+    if system_prompt:
+        text += f"<|system|>\n{system_prompt}"
+    text += f"\n<|user|>\n{instruction}"
     if answer is not None:
         text += f"\n<|assistant|>\n{answer}"
     return text
@@ -73,6 +80,74 @@ def _token_len(text: str, tokenizer) -> int:
     return len(tokenizer.encode(text, add_special_tokens=False))
 
 
+def _precompute_prefix_kv(model, tokenizer, system_prompt, device):
+    """Pre-compute KV cache for the static system-prompt prefix.
+
+    Returns ``(past_key_values, prefix_token_count)`` or ``(None, 0)``
+    when *system_prompt* is falsy or the prefix can't be cached safely.
+    """
+    if not system_prompt:
+        return None, 0
+
+    messages = [{"role": "system", "content": system_prompt}]
+    if hasattr(tokenizer, "apply_chat_template"):
+        prefix_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False,
+        )
+    else:
+        prefix_text = f"<|system|>\n{system_prompt}"
+
+    enc = tokenizer(prefix_text, return_tensors="pt", padding=False)
+    prefix_ids = enc["input_ids"].to(device)
+    prefix_len = prefix_ids.shape[-1]
+
+    # Verify that these tokens really are a prefix of a full prompt
+    sample_full = _build_chat_text_simple(
+        tokenizer, "test", system_prompt=system_prompt,
+    )
+    sample_ids = tokenizer(sample_full, return_tensors="pt")["input_ids"][0]
+    if sample_ids[:prefix_len].tolist() != prefix_ids[0].tolist():
+        print(
+            "[prefix-cache] WARNING: token-alignment mismatch — "
+            "disabling KV prefix caching for safety"
+        )
+        return None, 0
+
+    model.eval()
+    with torch.no_grad():
+        out = model(input_ids=prefix_ids, use_cache=True)
+
+    print(f"[prefix-cache] Cached {prefix_len} system-prompt tokens for KV reuse")
+    return out.past_key_values, prefix_len
+
+
+def _clone_past_kv(past_kv):
+    """Clone a KV cache so ``generate()`` can mutate the copy freely."""
+    if past_kv is None:
+        return None
+    try:
+        from transformers.cache_utils import DynamicCache
+        if isinstance(past_kv, DynamicCache):
+            clone = DynamicCache()
+            for i in range(len(past_kv.key_cache)):
+                clone.update(
+                    past_kv.key_cache[i].clone(),
+                    past_kv.value_cache[i].clone(),
+                    i,
+                )
+            return clone
+    except ImportError:
+        pass
+    if isinstance(past_kv, (list, tuple)):
+        return type(past_kv)(
+            tuple(t.clone() for t in layer) if isinstance(layer, tuple)
+            else layer.clone() if hasattr(layer, "clone") else layer
+            for layer in past_kv
+        )
+    import copy
+    return copy.deepcopy(past_kv)
+
+
 def build_simple_sft_dataset(
     df,
     tokenizer,
@@ -80,6 +155,7 @@ def build_simple_sft_dataset(
     text_col: str,
     answer_col: str,
     max_seq_length: int = 4096,
+    system_prompt: str = None,
 ) -> Dataset:
     """
     Build a HuggingFace Dataset with a single ``text`` column containing
@@ -103,7 +179,7 @@ def build_simple_sft_dataset(
 
         # Measure fixed overhead (prompt + chat wrappers + answer, no transcript)
         instruction_empty = insert_text_once(prompt_template, "")
-        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str)
+        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str, system_prompt=system_prompt)
         overhead = _token_len(full_empty, tokenizer)
 
         transcript_budget = max(max_seq_length - overhead - safety_margin, 0)
@@ -115,7 +191,7 @@ def build_simple_sft_dataset(
 
         # Build final string
         instruction = insert_text_once(prompt_template, trunc_text)
-        full_text = _build_chat_text_simple(tokenizer, instruction, answer_str)
+        full_text = _build_chat_text_simple(tokenizer, instruction, answer_str, system_prompt=system_prompt)
 
         # Safety check
         final_len = _token_len(full_text, tokenizer)
@@ -124,7 +200,7 @@ def build_simple_sft_dataset(
             trunc_tokens = trunc_tokens[:-overshoot] if overshoot < len(trunc_tokens) else []
             trunc_text = tokenizer.convert_tokens_to_string(trunc_tokens)
             instruction = insert_text_once(prompt_template, trunc_text)
-            full_text = _build_chat_text_simple(tokenizer, instruction, answer_str)
+            full_text = _build_chat_text_simple(tokenizer, instruction, answer_str, system_prompt=system_prompt)
 
         texts.append(full_text)
 
@@ -145,6 +221,7 @@ def build_simple_val_prompts(
     text_col: str,
     answer_col: str,
     max_seq_length: int = 4096,
+    system_prompt: str = None,
 ):
     """
     Build validation prompts (user turn only, with transcript) and gold answers.
@@ -165,7 +242,7 @@ def build_simple_val_prompts(
         answer_str = str(answer)
 
         instruction_empty = insert_text_once(prompt_template, "")
-        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str)
+        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str, system_prompt=system_prompt)
         overhead = _token_len(full_empty, tokenizer)
         transcript_budget = max(max_seq_length - overhead - safety_margin, 0)
 
@@ -175,7 +252,7 @@ def build_simple_val_prompts(
         instruction = insert_text_once(prompt_template, trunc_text)
 
         # Prompt only (user turn + generation prompt), no assistant answer
-        prompt_only = _build_chat_text_simple(tokenizer, instruction, answer=None)
+        prompt_only = _build_chat_text_simple(tokenizer, instruction, answer=None, system_prompt=system_prompt)
         prompts.append(prompt_only)
         gold_raw.append(answer_str)
 
@@ -275,6 +352,8 @@ def run_simple_val_inference(
     split_name: str = "val",
     training_time_sec: float | None = None,
     targets_spec: dict | None = None,
+    prefix_kv=None,
+    prefix_len: int = 0,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -316,23 +395,43 @@ def run_simple_val_inference(
             padding=False,
             truncation=False,
         )
-        input_ids = enc["input_ids"].to(device)
-        attention_mask = enc.get("attention_mask")
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(device)
+        full_ids = enc["input_ids"].to(device)
 
-        with torch.no_grad():
-            generated = trainer.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                num_return_sequences=1,
-                pad_token_id=pad_token_id,
+        if prefix_kv is not None and prefix_len > 0:
+            # Reuse cached system-prompt KV — only forward the suffix
+            suffix_ids = full_ids[:, prefix_len:]
+            attn_mask = torch.ones(
+                1, prefix_len + suffix_ids.shape[-1],
+                dtype=torch.long, device=device,
             )
+            kv_clone = _clone_past_kv(prefix_kv)
+            with torch.no_grad():
+                generated = trainer.model.generate(
+                    input_ids=suffix_ids,
+                    attention_mask=attn_mask,
+                    past_key_values=kv_clone,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    num_return_sequences=1,
+                    pad_token_id=pad_token_id,
+                )
+            decode_offset = suffix_ids.shape[-1]
+        else:
+            attention_mask = enc.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+            with torch.no_grad():
+                generated = trainer.model.generate(
+                    input_ids=full_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    num_return_sequences=1,
+                    pad_token_id=pad_token_id,
+                )
+            decode_offset = full_ids.shape[-1]
 
-        input_len = input_ids.shape[-1]
-        new_tokens = generated[0, input_len:].detach().cpu()
+        new_tokens = generated[0, decode_offset:].detach().cpu()
         raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
         # Pretty-print only for the first n_print examples
@@ -575,6 +674,7 @@ def run_simple_gemma3(
     gemma_model="27b",
     max_val_infer=5,
     targets_spec=None,
+    system_prompt: str = None,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
@@ -583,6 +683,10 @@ def run_simple_gemma3(
       - Uses Gemma-3 4B-IT or 27B-IT (``gemma_model``: "4b" | "27b") or full ``model_id``
       - Trains with plain SFTTrainer (no slot tokens, no custom loss)
       - The assistant answer is the raw JSON string from ``answer_col``
+
+    If ``system_prompt`` is provided the codebook/instructions are placed in
+    the system role.  During inference the system-prompt KV cache is computed
+    once per epoch and reused for every example (big speedup).
     """
     mtype = "simple_gemma3"
 
@@ -656,6 +760,7 @@ def run_simple_gemma3(
         text_col=text_col,
         answer_col=answer_col,
         max_seq_length=max_tokens,
+        system_prompt=system_prompt,
     )
     print(f"[simple-sft] Built {len(test_prompts)} TEST prompts for inference")
 
@@ -681,6 +786,7 @@ def run_simple_gemma3(
                 text_col=text_col,
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
+                system_prompt=system_prompt,
             )
 
             val_dataset = build_simple_sft_dataset(
@@ -690,6 +796,7 @@ def run_simple_gemma3(
                 text_col=text_col,
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
+                system_prompt=system_prompt,
             )
 
             # Validation prompts for inference (same truncation as train)
@@ -700,6 +807,7 @@ def run_simple_gemma3(
                 text_col=text_col,
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
+                system_prompt=system_prompt,
             )
             print(f"[simple-sft] Built {len(val_prompts)} validation prompts for inference")
 
@@ -809,6 +917,11 @@ def run_simple_gemma3(
                 if pynvml_mod and handle:
                     print_gpu_memory(handle, pynvml_mod)
 
+                # Pre-compute system-prompt KV cache (weights changed this epoch)
+                prefix_kv, prefix_len = _precompute_prefix_kv(
+                    trainer.model, tokenizer, system_prompt, device,
+                )
+
                 # Validation inference: generate on val prompts and print + metrics
                 run_simple_val_inference(
                     trainer=trainer,
@@ -826,6 +939,8 @@ def run_simple_gemma3(
                     split_name="val",
                     training_time_sec=elapsed,
                     targets_spec=targets_spec,
+                    prefix_kv=prefix_kv,
+                    prefix_len=prefix_len,
                 )
 
                 # Test inference: same procedure on held-out test set
@@ -844,7 +959,14 @@ def run_simple_gemma3(
                     seed=train_val_seed,
                     split_name="test",
                     targets_spec=targets_spec,
+                    prefix_kv=prefix_kv,
+                    prefix_len=prefix_len,
                 )
+
+                # Free KV cache for this epoch
+                del prefix_kv
+                if gpu_avail:
+                    torch.cuda.empty_cache()
 
                 # Save model + tokenizer after each epoch (overwrites previous epoch)
                 if model_save_dir is not None:
