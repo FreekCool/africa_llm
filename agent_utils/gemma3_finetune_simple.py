@@ -250,15 +250,22 @@ def run_simple_val_inference(
     epoch: int | None = None,
     seed: int | None = None,
     split_name: str = "val",
+    training_time_sec: float | None = None,
+    targets_spec: dict | None = None,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
     simple per-target metrics (accuracy, precision, recall, F1).
+    Times inference and saves total/avg inference time (and optionally
+    training_time_sec for val) in the same metrics CSV.
+    If targets_spec is provided, "in label" / "answers_in_label" use the
+    target's allowed list (in-scope) instead of the gold set, so e.g. topic01
+    predictions like AGRICULTURE are in_label even when no gold had that value.
     """
     N = min(len(val_prompts), len(val_gold_raw))
     if N == 0:
         print("[val-inference] No validation examples to run.")
-        return
+        return None
 
     n_print = min(max_examples, N)
 
@@ -275,6 +282,7 @@ def run_simple_val_inference(
     )
     trainer.model.eval()
 
+    inference_start = time.perf_counter()
     for i in range(N):
         prompt_text = val_prompts[i]
         gold = val_gold_raw[i]
@@ -359,6 +367,12 @@ def run_simple_val_inference(
         if (i + 1) % 5 == 0 or i == N - 1:
             print(f"[val-inference] processed {i + 1}/{N} validation examples")
 
+    total_inference_sec = time.perf_counter() - inference_start
+    avg_sec_per_prompt = total_inference_sec / N if N else 0.0
+    print(f"[{split_name}-inference] total time: {total_inference_sec:.2f}s  |  n_prompts: {N}  |  avg: {avg_sec_per_prompt:.3f}s per prompt")
+    if training_time_sec is not None and split_name == "val":
+        print(f"[{split_name}-inference] training time (this epoch): {training_time_sec:.2f}s")
+
     # ---- per-target metrics ----
     print("\n" + "-" * 80)
     print(f"{split_name.upper()} METRICS PER TARGET (N={N} examples with prompts)")
@@ -386,9 +400,19 @@ def run_simple_val_inference(
 
         answered_frac = n_answered / n_gold if n_gold > 0 else 0.0
 
-        # "Expected labels" = label set observed in gold for this target
+        # "In label" = in allowed set for all targets (binary, multiclass, string).
+        # Allowed comes from TARGETS in the notebook; string targets get allowed from the dataset.
         gold_label_set = set(all_true)
-        n_in_label = sum(1 for _, p in pairs if p in gold_label_set)
+        spec = (targets_spec or {}).get(t) if targets_spec else None
+        allowed = spec.get("allowed") if spec and isinstance(spec, dict) else None
+        if allowed is not None:
+            allowed_set = {str(a).strip() for a in allowed}
+            def _in_scope(p):
+                return str(p).strip() in allowed_set
+        else:
+            def _in_scope(p):
+                return p in gold_label_set
+        n_in_label = sum(1 for _, p in pairs if _in_scope(p))
         in_label_frac = n_in_label / n_gold if n_gold > 0 else 0.0
 
         if n_answered > 0:
@@ -412,8 +436,8 @@ def run_simple_val_inference(
         )
 
         # Collect example-level answer statistics per target for CSV export
-        answers_in_label = sorted({str(p) for _, p in pairs if p in gold_label_set})
-        answers_out_label = sorted({str(p) for _, p in pairs if p not in gold_label_set})
+        answers_in_label = sorted({str(p) for _, p in pairs if _in_scope(p)})
+        answers_out_label = sorted({str(p) for _, p in pairs if not _in_scope(p)})
 
         rows.append(
             {
@@ -429,12 +453,37 @@ def run_simple_val_inference(
                 "in_label_frac": in_label_frac,
                 "answers_in_label": ";".join(answers_in_label),
                 "answers_out_of_label": ";".join(answers_out_label),
+                "total_inference_sec": None,
+                "n_prompts": None,
+                "avg_sec_per_prompt": None,
+                "training_time_sec": None,
             }
         )
 
+    # Append timing row (same CSV as per-target metrics)
+    timing_row = {
+        "target": "_timing",
+        "n_gold": N,
+        "n_answered": None,
+        "n_in_label": None,
+        "accuracy": None,
+        "precision_macro": None,
+        "recall_macro": None,
+        "f1_macro": None,
+        "answered_frac": None,
+        "in_label_frac": None,
+        "answers_in_label": None,
+        "answers_out_of_label": None,
+        "total_inference_sec": total_inference_sec,
+        "n_prompts": N,
+        "avg_sec_per_prompt": avg_sec_per_prompt,
+        "training_time_sec": training_time_sec if split_name == "val" else None,
+    }
+    rows.append(timing_row)
+
     print("=" * 80 + "\n")
 
-    # Optionally save metrics to CSV
+    # Optionally save metrics to CSV (includes timing row)
     if results_folder is not None and rows:
         os.makedirs(results_folder, exist_ok=True)
         lr_str = f"{learning_rate}" if learning_rate is not None else "na"
@@ -443,7 +492,13 @@ def run_simple_val_inference(
         csv_name = f"{mtype}_{split_name}_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}.csv"
         csv_path = os.path.join(results_folder, csv_name)
         pd.DataFrame(rows).to_csv(csv_path, index=False)
-        print(f"[{split_name}-metrics] Saved per-target metrics to {csv_path}")
+        print(f"[{split_name}-metrics] Saved per-target metrics + timing to {csv_path}")
+
+    return {
+        "total_inference_sec": total_inference_sec,
+        "n_prompts": N,
+        "avg_sec_per_prompt": avg_sec_per_prompt,
+    }
 
 
 # ── main entry point ──────────────────────────────────────────────────
@@ -475,6 +530,7 @@ def run_simple_gemma3(
     grad_accum_steps=4,
     gemma_model="27b",
     max_val_infer=5,
+    targets_spec=None,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
@@ -724,6 +780,8 @@ def run_simple_gemma3(
                     epoch=ep,
                     seed=train_val_seed,
                     split_name="val",
+                    training_time_sec=elapsed,
+                    targets_spec=targets_spec,
                 )
 
                 # Test inference: same procedure on held-out test set
@@ -741,6 +799,7 @@ def run_simple_gemma3(
                     epoch=ep,
                     seed=train_val_seed,
                     split_name="test",
+                    targets_spec=targets_spec,
                 )
 
                 # Save model + tokenizer after each epoch (overwrites previous epoch)

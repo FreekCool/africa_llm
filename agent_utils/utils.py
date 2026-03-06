@@ -219,6 +219,7 @@ def train_validate(
             epochs=epochs,
             learning_rates=learning_rates,
             gemma_model=gemma_model,
+            targets_spec=targets_spec,
         )
 
     if mtype == "ilora_llama3":
