@@ -647,6 +647,15 @@ def run_simple_gemma3(
             print(f"Trainer ready  |  train bs={trainer.args.per_device_train_batch_size}  "
                   f"grad_accum={trainer.args.gradient_accumulation_steps}")
 
+            # Directory where we'll save the adapter/tokenizer for this LR/seed.
+            # We overwrite the same folder each epoch, keeping only the latest.
+            if model_dir is not None:
+                save_subdir = f"{mtype}_lr{learning_rate}_seed{train_val_seed}"
+                model_save_dir = os.path.join(model_dir, save_subdir)
+                os.makedirs(model_save_dir, exist_ok=True)
+            else:
+                model_save_dir = None
+
             # ── 5) Epoch loop ─────────────────────────────────────────
             best_eval_loss = float("inf")
             no_improvement_counter = 0
@@ -701,6 +710,12 @@ def run_simple_gemma3(
                     seed=train_val_seed,
                     split_name="test",
                 )
+
+                # Save model + tokenizer after each epoch (overwrites previous epoch)
+                if model_save_dir is not None:
+                    print(f"[save] Saving adapter/tokenizer to {model_save_dir}")
+                    model.save_pretrained(model_save_dir)
+                    tokenizer.save_pretrained(model_save_dir)
 
                 # Early stopping
                 if eval_loss is not None:
