@@ -50,6 +50,13 @@ from .utils import (
 
 # ── helpers ───────────────────────────────────────────────────────────
 
+def _strip_bom(s: str) -> str:
+    """Remove leading UTF-8 BOM so it doesn't become an extra token."""
+    if s and s[0] == "\ufeff":
+        return s[1:]
+    return s
+
+
 def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
                             system_prompt: str = None) -> str:
     """Build a chat-formatted string using the tokenizer's chat template.
@@ -57,6 +64,9 @@ def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
     When *system_prompt* is provided it is passed as a ``system`` role message.
     Gemma 3's template folds it into the first user turn automatically.
     """
+    instruction = _strip_bom(instruction)
+    if system_prompt:
+        system_prompt = _strip_bom(system_prompt)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
