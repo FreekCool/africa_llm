@@ -52,7 +52,11 @@ from .utils import (
 
 def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
                             system_prompt: str = None) -> str:
-    """Build a chat-formatted string using the tokenizer's chat template."""
+    """Build a chat-formatted string using the tokenizer's chat template.
+
+    When *system_prompt* is provided it is passed as a ``system`` role message.
+    Gemma 3's template folds it into the first user turn automatically.
+    """
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -69,8 +73,8 @@ def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
     # Fallback for tokenizers without chat templates
     text = ""
     if system_prompt:
-        text += f"<|system|>\n{system_prompt}"
-    text += f"\n<|user|>\n{instruction}"
+        text += f"<|system|>\n{system_prompt}\n"
+    text += f"<|user|>\n{instruction}"
     if answer is not None:
         text += f"\n<|assistant|>\n{answer}"
     return text
@@ -85,33 +89,37 @@ def _precompute_prefix_kv(model, tokenizer, system_prompt, device):
 
     Returns ``(past_key_values, prefix_token_count)`` or ``(None, 0)``
     when *system_prompt* is falsy or the prefix can't be cached safely.
+
+    The common prefix is found by building two full prompts with different
+    dummy instructions and comparing their token sequences.  This is
+    template-agnostic and works regardless of how the tokenizer folds the
+    system role into the conversation.
     """
     if not system_prompt:
         return None, 0
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if hasattr(tokenizer, "apply_chat_template"):
-        prefix_text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=False,
-        )
-    else:
-        prefix_text = f"<|system|>\n{system_prompt}"
+    # Build two prompts that differ only in the instruction part
+    text_a = _build_chat_text_simple(tokenizer, "PLACEHOLDER_AAA", system_prompt=system_prompt)
+    text_b = _build_chat_text_simple(tokenizer, "PLACEHOLDER_BBB", system_prompt=system_prompt)
 
-    enc = tokenizer(prefix_text, return_tensors="pt", padding=False)
-    prefix_ids = enc["input_ids"].to(device)
-    prefix_len = prefix_ids.shape[-1]
+    ids_a = tokenizer(text_a, return_tensors="pt")["input_ids"][0]
+    ids_b = tokenizer(text_b, return_tensors="pt")["input_ids"][0]
 
-    # Verify that these tokens really are a prefix of a full prompt
-    sample_full = _build_chat_text_simple(
-        tokenizer, "test", system_prompt=system_prompt,
-    )
-    sample_ids = tokenizer(sample_full, return_tensors="pt")["input_ids"][0]
-    if sample_ids[:prefix_len].tolist() != prefix_ids[0].tolist():
+    # Walk both sequences to find where they first diverge
+    prefix_len = 0
+    for i in range(min(len(ids_a), len(ids_b))):
+        if ids_a[i] != ids_b[i]:
+            break
+        prefix_len = i + 1
+
+    if prefix_len < 10:
         print(
-            "[prefix-cache] WARNING: token-alignment mismatch — "
-            "disabling KV prefix caching for safety"
+            f"[prefix-cache] Common prefix too short ({prefix_len} tokens) "
+            "— disabling KV prefix caching"
         )
         return None, 0
+
+    prefix_ids = ids_a[:prefix_len].unsqueeze(0).to(device)
 
     model.eval()
     with torch.no_grad():
