@@ -229,6 +229,7 @@ def run_simple_val_inference(
     learning_rate: float | None = None,
     epoch: int | None = None,
     seed: int | None = None,
+    split_name: str = "val",
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -246,7 +247,7 @@ def run_simple_val_inference(
     per_target_pred = defaultdict(list)
 
     print("\n" + "=" * 80)
-    print(f"VALIDATION INFERENCE (first {n_print} examples, max_new_tokens={max_new_tokens})")
+    print(f"{split_name.upper()} INFERENCE (first {n_print} examples, max_new_tokens={max_new_tokens})")
     print("=" * 80)
 
     pad_token_id = getattr(tokenizer, "pad_token_id", None) or getattr(
@@ -340,7 +341,7 @@ def run_simple_val_inference(
 
     # ---- per-target metrics ----
     print("\n" + "-" * 80)
-    print(f"VAL METRICS PER TARGET (N={N} examples with prompts)")
+    print(f"{split_name.upper()} METRICS PER TARGET (N={N} examples with prompts)")
     print("-" * 80)
     header = (
         f"{'target':25s} {'n':>5s} "
@@ -419,10 +420,10 @@ def run_simple_val_inference(
         lr_str = f"{learning_rate}" if learning_rate is not None else "na"
         ep_str = f"{epoch}" if epoch is not None else "na"
         seed_str = f"{seed}" if seed is not None else "na"
-        csv_name = f"{mtype}_val_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}.csv"
+        csv_name = f"{mtype}_{split_name}_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}.csv"
         csv_path = os.path.join(results_folder, csv_name)
         pd.DataFrame(rows).to_csv(csv_path, index=False)
-        print(f"[val-metrics] Saved per-target metrics to {csv_path}")
+        print(f"[{split_name}-metrics] Saved per-target metrics to {csv_path}")
 
 
 # ── main entry point ──────────────────────────────────────────────────
@@ -514,6 +515,17 @@ def run_simple_gemma3(
         print_gpu_memory(handle, pynvml_mod)
 
     cv_performances = pd.DataFrame()
+
+    # ── Pre-build TEST prompts for inference ─────────────────────────-
+    test_prompts, test_gold_raw = build_simple_val_prompts(
+        df=test_df,
+        tokenizer=tokenizer,
+        prompt_template=prompt,
+        text_col=text_col,
+        answer_col=answer_col,
+        max_seq_length=max_tokens,
+    )
+    print(f"[simple-sft] Built {len(test_prompts)} TEST prompts for inference")
 
     # ── LR / seed loop ────────────────────────────────────────────────
     for learning_rate in learning_rates:
@@ -656,7 +668,7 @@ def run_simple_gemma3(
                 if pynvml_mod and handle:
                     print_gpu_memory(handle, pynvml_mod)
 
-                # Validation inference: generate on val prompts and print (no metrics)
+                # Validation inference: generate on val prompts and print + metrics
                 run_simple_val_inference(
                     trainer=trainer,
                     tokenizer=tokenizer,
@@ -670,6 +682,24 @@ def run_simple_gemma3(
                     learning_rate=learning_rate,
                     epoch=ep,
                     seed=train_val_seed,
+                    split_name="val",
+                )
+
+                # Test inference: same procedure on held-out test set
+                run_simple_val_inference(
+                    trainer=trainer,
+                    tokenizer=tokenizer,
+                    device=device,
+                    val_prompts=test_prompts,
+                    val_gold_raw=test_gold_raw,
+                    max_new_tokens=max_new_tokens,
+                    max_examples=max_val_infer,
+                    results_folder=results_folder,
+                    mtype=mtype,
+                    learning_rate=learning_rate,
+                    epoch=ep,
+                    seed=train_val_seed,
+                    split_name="test",
                 )
 
                 # Early stopping
