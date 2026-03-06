@@ -23,6 +23,7 @@ import gc
 import time
 import json
 import datetime
+import tempfile
 
 import torch
 import pandas as pd
@@ -1032,6 +1033,13 @@ def run_simple_gemma3(
     once per epoch and reused for every example (big speedup).
     """
     mtype = "simple_gemma3"
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if model_dir is not None:
+        base_run_dir = os.path.join(model_dir, f"{run_id}_{mtype}")
+        os.makedirs(base_run_dir, exist_ok=True)
+        print(f"[save] All outputs (trainer + adapter) under: {base_run_dir}")
+    else:
+        base_run_dir = None
 
     if gemma_model in GEMMA_MODEL_IDS:
         model_id = GEMMA_MODEL_IDS[gemma_model]
@@ -1213,8 +1221,20 @@ def run_simple_gemma3(
             model.print_trainable_parameters()
 
             # ── 3) Training arguments ─────────────────────────────────
+            if base_run_dir is not None:
+                trainer_output_dir = os.path.join(
+                    base_run_dir, f"trainer_lr{learning_rate}_seed{train_val_seed}"
+                )
+                model_save_dir = os.path.join(
+                    base_run_dir, f"{mtype}_lr{learning_rate}_seed{train_val_seed}"
+                )
+                os.makedirs(trainer_output_dir, exist_ok=True)
+                os.makedirs(model_save_dir, exist_ok=True)
+            else:
+                trainer_output_dir = tempfile.mkdtemp(prefix="africa_llm_simple_")
+                model_save_dir = None
             training_args = TrainingArguments(
-                output_dir="./results_simple",
+                output_dir=trainer_output_dir,
                 num_train_epochs=1,
                 per_device_train_batch_size=batch_size,
                 per_device_eval_batch_size=batch_size,
@@ -1252,14 +1272,7 @@ def run_simple_gemma3(
             print(f"Trainer ready  |  train bs={trainer.args.per_device_train_batch_size}  "
                   f"grad_accum={trainer.args.gradient_accumulation_steps}")
 
-            # Directory where we'll save the adapter/tokenizer for this LR/seed.
-            # We overwrite the same folder each epoch, keeping only the latest.
-            if model_dir is not None:
-                save_subdir = f"{mtype}_lr{learning_rate}_seed{train_val_seed}"
-                model_save_dir = os.path.join(model_dir, save_subdir)
-                os.makedirs(model_save_dir, exist_ok=True)
-            else:
-                model_save_dir = None
+            # model_save_dir already set above (under base_run_dir); we overwrite each epoch.
 
             # ── 5) Epoch loop ─────────────────────────────────────────
             best_eval_loss = float("inf")
