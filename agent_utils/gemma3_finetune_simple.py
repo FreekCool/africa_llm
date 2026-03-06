@@ -236,6 +236,29 @@ def _extract_pred_json(raw_completion: str):
         return None
 
 
+def _normalize_text_for_partial(s) -> set:
+    """Normalize for partial match: strip, lower, collapse whitespace, split into words."""
+    if s is None:
+        return set()
+    t = str(s).strip().lower()
+    t = " ".join(t.split())  # collapse whitespace
+    return set(w for w in t.split() if w)
+
+
+def _string_exact_match(gold, pred) -> bool:
+    """Case-insensitive, whitespace-normalized equality."""
+    return _normalize_text_for_partial(gold) == _normalize_text_for_partial(pred)
+
+
+def _string_partial_match(gold, pred) -> bool:
+    """True if gold and pred share at least one word (after normalization)."""
+    g_words = _normalize_text_for_partial(gold)
+    p_words = _normalize_text_for_partial(pred)
+    if not g_words or not p_words:
+        return False
+    return bool(g_words & p_words)
+
+
 def run_simple_val_inference(
     trainer,
     tokenizer,
@@ -415,9 +438,28 @@ def run_simple_val_inference(
         n_in_label = sum(1 for _, p in pairs if _in_scope(p))
         in_label_frac = n_in_label / n_gold if n_gold > 0 else 0.0
 
+        is_string_target = spec and spec.get("type") == "string"
+        answers_partially_correct = []
+
         if n_answered > 0:
             y_true = [g for g, _ in pairs]
-            y_pred = [p for _, p in pairs]
+            if is_string_target:
+                # For string targets: count as correct if exact match OR partial match (word overlap)
+                y_pred = []
+                partial_only_preds = set()
+                for g, p in pairs:
+                    exact = _string_exact_match(g, p)
+                    partial = _string_partial_match(g, p)
+                    if exact:
+                        y_pred.append(g)
+                    elif partial:
+                        y_pred.append(g)  # count as correct
+                        partial_only_preds.add(str(p).strip())
+                    else:
+                        y_pred.append(p)
+                answers_partially_correct = sorted(partial_only_preds)
+            else:
+                y_pred = [p for _, p in pairs]
 
             try:
                 acc = accuracy_score(y_true, y_pred)
@@ -453,6 +495,7 @@ def run_simple_val_inference(
                 "in_label_frac": in_label_frac,
                 "answers_in_label": ";".join(answers_in_label),
                 "answers_out_of_label": ";".join(answers_out_label),
+                "answers_partially_correct": ";".join(answers_partially_correct) if answers_partially_correct else None,
                 "total_inference_sec": None,
                 "n_prompts": None,
                 "avg_sec_per_prompt": None,
@@ -474,6 +517,7 @@ def run_simple_val_inference(
         "in_label_frac": None,
         "answers_in_label": None,
         "answers_out_of_label": None,
+        "answers_partially_correct": None,
         "total_inference_sec": total_inference_sec,
         "n_prompts": N,
         "avg_sec_per_prompt": avg_sec_per_prompt,
