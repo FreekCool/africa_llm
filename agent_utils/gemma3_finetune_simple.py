@@ -223,6 +223,15 @@ def build_simple_sft_dataset(
     if texts:
         sample_len = _token_len(texts[0], tokenizer)
         print(f"  example 0: {sample_len} tokens, {len(texts[0])} chars")
+        # With system prompt, Gemma folds it into the first user turn: codebook should appear first in content
+        if system_prompt and system_prompt.strip():
+            # Strip BOM and leading/trailing whitespace for comparison
+            codebook_start = system_prompt.lstrip("\ufeff").strip()[:60]
+            if codebook_start not in texts[0]:
+                print(
+                    f"  [simple-sft] WARNING: codebook start {codebook_start!r} not found in example — "
+                    "check system vs user split"
+                )
         print(f"  tail: ...{texts[0][-400:]}")
 
     return Dataset.from_dict({"text": texts})
@@ -784,6 +793,17 @@ def run_simple_gemma3(
     )
     print(f"[simple-sft] Built {len(test_prompts)} TEST prompts for inference")
 
+    # Log how system vs user prompt are used (so user can verify the split)
+    if system_prompt is not None:
+        user_preview = (prompt[:80] + "...") if len(prompt) > 80 else prompt
+        print(
+            f"[simple-sft] Prompt split: system={len(system_prompt)} chars (codebook), "
+            f"user template={len(prompt)} chars → instruction = template with '{{}}' filled by post"
+        )
+        print(f"[simple-sft] User template preview: {user_preview}")
+    else:
+        print("[simple-sft] Single prompt (no system_prompt); no KV prefix caching.")
+
     # ── LR / seed loop ────────────────────────────────────────────────
     for learning_rate in learning_rates:
         fold_counter = 0
@@ -835,6 +855,8 @@ def run_simple_gemma3(
             n_print = min(2, len(dataset))
             print("\n" + "=" * 80)
             print(f"TRAINING EXAMPLES (first {n_print} full strings)")
+            if system_prompt:
+                print("(Structure: system [codebook] + user [template+post]; Gemma template folds system into first user turn.)")
             print("=" * 80)
             for i in range(n_print):
                 full_text = dataset["text"][i]
