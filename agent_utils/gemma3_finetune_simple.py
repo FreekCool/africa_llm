@@ -210,8 +210,28 @@ def _extract_pred_json(raw_completion: str):
     # Use the robust helper from utils.py to get the last {...} block
     candidate = _extract_last_json(s)
 
+    # First, try a direct JSON parse
     try:
         return json.loads(candidate)
+    except Exception:
+        pass
+
+    # Many smaller Gemma variants emit “smart quotes” or other Unicode
+    # punctuation that makes otherwise-valid JSON fail to parse.  Normalise
+    # the most common offenders and try again.
+    translation_table = {
+        ord("“"): ord('"'),
+        ord("”"): ord('"'),
+        ord("„"): ord('"'),
+        ord("‟"): ord('"'),
+        ord("’"): ord("'"),
+        ord("‘"): ord("'"),
+        ord("\u00a0"): ord(" "),  # non‑breaking space
+    }
+    normalised = candidate.translate(translation_table)
+
+    try:
+        return json.loads(normalised)
     except Exception:
         return None
 
