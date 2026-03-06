@@ -76,6 +76,8 @@ def train_validate(
     targets_spec=None,
     gemma_model="27b",  # for simple_gemma3: "4b" | "27b" or full HuggingFace model_id
     system_prompt=None,  # static instructions placed in system role (enables KV prefix caching)
+    inference_batch_size=1,  # for simple_gemma3: batch size at inference (e.g. 4 or 8 for faster val/test)
+    stop_on_complete_json=True,  # for simple_gemma3: stop generation when output parses as JSON
 ):
     SUPPORTED_MODELS = [
         "llama3",
@@ -222,6 +224,8 @@ def train_validate(
             gemma_model=gemma_model,
             targets_spec=targets_spec,
             system_prompt=system_prompt,
+            inference_batch_size=inference_batch_size,
+            stop_on_complete_json=stop_on_complete_json,
         )
 
     if mtype == "ilora_llama3":

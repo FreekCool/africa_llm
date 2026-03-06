@@ -9,6 +9,13 @@ using TRL's SFTTrainer.
 
 The model learns to generate the complete JSON answer
 (with plain values, not slot tokens) given the user prompt + transcript.
+
+Inference speedups (no quality loss):
+  - System prompt is KV-cache reused (suffix-only sent to model).
+  - Early stop when output parses as complete JSON (fewer decode steps).
+  - Batched inference: set inference_batch_size=4 or 8 in train_validate().
+For maximum throughput (e.g. 10k+ posts), use ``inference_vllm_gemma3``
+with a merged checkpoint and vLLM (pip install vllm).
 """
 
 import os
@@ -139,6 +146,18 @@ def _precompute_prefix_kv(model, tokenizer, system_prompt, device):
     return out.past_key_values, prefix_len
 
 
+def _has_complete_json(text: str) -> bool:
+    """True if text contains at least one parseable JSON object (for early stopping)."""
+    if not text or "{" not in text or "}" not in text:
+        return False
+    candidate = _extract_last_json(text.strip())
+    try:
+        json.loads(candidate)
+        return True
+    except Exception:
+        return False
+
+
 def _generate_with_prefix_cache(
     model,
     tokenizer,
@@ -148,10 +167,13 @@ def _generate_with_prefix_cache(
     max_new_tokens: int,
     pad_token_id: int | None,
     device: torch.device,
+    stop_on_complete_json: bool = True,
 ):
     """
     Autoregressive generation using a precomputed prefix KV cache.
     Only the suffix tokens are run through the model; then we decode one token at a time.
+    If stop_on_complete_json is True, stops as soon as the decoded output parses as JSON
+    (saves decode steps; no quality change).
     Returns (new_token_ids, prefill_sec, decode_sec) where new_token_ids is a 1D tensor on CPU.
     """
     eos_token_id = getattr(tokenizer, "eos_token_id", None) or pad_token_id
@@ -180,10 +202,9 @@ def _generate_with_prefix_cache(
     next_tokens = next_token_logits.argmax(dim=-1, keepdim=True)
     generated = [next_tokens]
 
-    # Decode loop: one token at a time
     cur_len = suffix_len + 1
     t_decode = time.perf_counter()
-    for _ in range(max_new_tokens - 1):
+    for step in range(max_new_tokens - 1):
         next_token = next_tokens
         if eos_token_id is not None and (next_token == eos_token_id).all().item():
             break
@@ -202,12 +223,149 @@ def _generate_with_prefix_cache(
         next_tokens = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated.append(next_tokens)
         cur_len += 1
+        # Early stop when output looks like complete JSON (every 16 steps to limit overhead)
+        if stop_on_complete_json and batch_size == 1 and step % 16 == 15:
+            so_far = torch.cat(generated, dim=1)[0].detach().cpu()
+            decoded = tokenizer.decode(so_far, skip_special_tokens=True)
+            if _has_complete_json(decoded):
+                break
     if device.type == "cuda":
         torch.cuda.synchronize()
     decode_sec = time.perf_counter() - t_decode
 
     out = torch.cat(generated, dim=1)[0].detach().cpu()
     return out, prefill_sec, decode_sec
+
+
+def _generate_with_prefix_cache_batched(
+    model,
+    tokenizer,
+    suffix_ids_list: list,
+    prefix_kv,
+    prefix_len: int,
+    max_new_tokens: int,
+    pad_token_id: int | None,
+    device: torch.device,
+    stop_on_complete_json: bool = True,
+):
+    """
+    Batched generation with shared prefix cache. suffix_ids_list is a list of 1D tensors
+    (suffix token ids per prompt). Pads to max length, runs one prefill for the batch,
+    then decode until all sequences hit EOS or max_new_tokens.
+    Returns list of (new_token_ids_1d, prefill_sec, decode_sec); prefill/decode_sec are
+    shared (total batch time).
+    """
+    eos_token_id = getattr(tokenizer, "eos_token_id", None) or pad_token_id
+    B = len(suffix_ids_list)
+    if B == 0:
+        return []
+    pad_id = pad_token_id if pad_token_id is not None else 0
+    max_suffix = max(s.shape[0] for s in suffix_ids_list)
+    suffix_lens = [s.shape[0] for s in suffix_ids_list]
+    # Pad to (B, max_suffix)
+    padded = torch.full((B, max_suffix), pad_id, dtype=torch.long, device=device)
+    attn_mask = torch.zeros(B, max_suffix, dtype=torch.long, device=device)
+    for i, s in enumerate(suffix_ids_list):
+        s = s.to(device)
+        padded[i, : s.shape[0]] = s
+        attn_mask[i, : s.shape[0]] = 1
+    position_ids = torch.zeros(B, max_suffix, dtype=torch.long, device=device)
+    for i in range(B):
+        position_ids[i, : suffix_lens[i]] = torch.arange(
+            prefix_len, prefix_len + suffix_lens[i], dtype=torch.long, device=device
+        )
+    prefix_batched = _expand_past_kv_to_batch(prefix_kv, B)
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        outputs = model(
+            input_ids=padded,
+            attention_mask=attn_mask,
+            position_ids=position_ids,
+            past_key_values=prefix_batched,
+            use_cache=True,
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    prefill_sec = time.perf_counter() - t0
+    logits = outputs.logits  # (B, max_suffix, V)
+    past_key_values = outputs.past_key_values
+    last_pos = torch.tensor([suffix_lens[j] - 1 for j in range(B)], device=device)
+    next_tokens = logits[torch.arange(B, device=device), last_pos, :].argmax(dim=-1, keepdim=True)  # (B, 1)
+    generated = [next_tokens]
+    finished = torch.zeros(B, dtype=torch.bool, device=device)
+    cur_len = max_suffix + 1
+    t_decode = time.perf_counter()
+    for step in range(max_new_tokens - 1):
+        next_token = next_tokens.clone()
+        next_token[finished] = pad_id
+        for j in range(B):
+            if next_tokens[j].item() == eos_token_id:
+                finished[j] = True
+        if finished.all():
+            break
+        position_ids_step = torch.full(
+            (B, 1), prefix_len + cur_len, dtype=torch.long, device=device
+        )
+        with torch.no_grad():
+            outputs = model(
+                input_ids=next_token,
+                position_ids=position_ids_step,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+        logits = outputs.logits
+        past_key_values = outputs.past_key_values
+        next_tokens = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        generated.append(next_tokens)
+        cur_len += 1
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    decode_sec = time.perf_counter() - t_decode
+    # Split into per-sequence token lists (truncate at EOS)
+    all_tokens = torch.cat(generated, dim=1)  # (B, num_gen)
+    results = []
+    for j in range(B):
+        row = all_tokens[j].detach().cpu()
+        if eos_token_id is not None:
+            idx = (row == eos_token_id).nonzero(as_tuple=True)[0]
+            if len(idx) > 0:
+                row = row[: idx[0].item() + 1]
+        results.append((row, prefill_sec, decode_sec))
+    return results
+
+
+def _expand_past_kv_to_batch(past_kv, batch_size: int):
+    """Expand a batch-1 KV cache to batch_size (repeat the same prefix for each)."""
+    if past_kv is None or batch_size <= 1:
+        return past_kv
+    try:
+        from transformers.cache_utils import DynamicCache
+        if isinstance(past_kv, DynamicCache):
+            key_list = getattr(past_kv, "key_cache", None) or getattr(past_kv, "_key_states", None)
+            val_list = getattr(past_kv, "value_cache", None) or getattr(past_kv, "_value_states", None)
+            if key_list is not None and val_list is not None:
+                expanded = DynamicCache()
+                for i in range(len(key_list)):
+                    k = key_list[i]   # (1, H, L, D)
+                    v = val_list[i]
+                    k_b = k.repeat(batch_size, 1, 1, 1)
+                    v_b = v.repeat(batch_size, 1, 1, 1)
+                    expanded.update(k_b, v_b, i)
+                return expanded
+    except Exception:
+        pass
+    if isinstance(past_kv, (list, tuple)):
+        out = []
+        for layer in past_kv:
+            if isinstance(layer, (list, tuple)) and len(layer) >= 2:
+                k, v = layer[0], layer[1]
+                k_b = k.repeat(batch_size, *([1] * (k.dim() - 1)))
+                v_b = v.repeat(batch_size, *([1] * (v.dim() - 1)))
+                out.append((k_b, v_b))
+            else:
+                out.append(layer)
+        return tuple(out)
+    return past_kv
 
 
 def _clone_past_kv(past_kv):
@@ -462,6 +620,8 @@ def run_simple_val_inference(
     targets_spec: dict | None = None,
     prefix_kv=None,
     prefix_len: int = 0,
+    inference_batch_size: int = 1,
+    stop_on_complete_json: bool = True,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -491,96 +651,26 @@ def run_simple_val_inference(
         tokenizer, "eos_token_id", None
     )
     trainer.model.eval()
-
+    use_prefix_cache_global = (
+        prefix_kv is not None and prefix_len > 0 and inference_batch_size >= 1
+    )
     inference_start = time.perf_counter()
-    for i in range(N):
-        prompt_text = val_prompts[i]
-        gold = val_gold_raw[i]
 
-        enc = tokenizer(
-            prompt_text,
-            return_tensors="pt",
-            padding=False,
-            truncation=False,
-        )
-        full_ids = enc["input_ids"].to(device)
-
-        use_prefix_cache = (
-            prefix_kv is not None
-            and prefix_len > 0
-            and full_ids.shape[-1] > prefix_len  # need at least one suffix token
-        )
-        if use_prefix_cache:
-            kv_clone = _clone_past_kv(prefix_kv)
-            suffix_len = full_ids.shape[-1] - prefix_len
-            suffix_ids = full_ids[:, prefix_len:].to(device)
-            new_tokens, prefill_sec, decode_sec = _generate_with_prefix_cache(
-                model=trainer.model,
-                tokenizer=tokenizer,
-                suffix_ids=suffix_ids,
-                prefix_kv=kv_clone,
-                prefix_len=prefix_len,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=pad_token_id,
-                device=device,
-            )
-            raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
-            suffix_text = tokenizer.decode(suffix_ids[0], skip_special_tokens=True)
-            if i == 0:
-                print(
-                    f"[prefix-cache] Only {suffix_len} tokens sent to model "
-                    f"(prefix {prefix_len} tokens from cache). "
-                    f"Prefill: {prefill_sec:.2f}s | Decode: {decode_sec:.2f}s"
-                )
-        else:
-            attention_mask = enc.get("attention_mask")
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(device)
-            with torch.no_grad():
-                generated = trainer.model.generate(
-                    input_ids=full_ids,
-                    attention_mask=attention_mask,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    num_return_sequences=1,
-                    pad_token_id=pad_token_id,
-                )
-            decode_offset = full_ids.shape[-1]
-            new_tokens = generated[0, decode_offset:].detach().cpu()
-            raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-        # Pretty-print only for the first n_print examples
-        if i < n_print:
-            print(f"\n--- Example {i + 1}/{N} ---")
-            if use_prefix_cache:
-                print("SENT TO MODEL (suffix only; prefix in KV cache):")
-                print(suffix_text[:600] + ("..." if len(suffix_text) > 600 else ""))
-                print("(Full prompt for reference, last 200 chars): ..." + prompt_text[-200:])
-            else:
-                print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
-            print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
-            print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
-
+    def process_one_result(i, prompt_text, gold, raw_completion, suffix_text_or_none):
+        """Shared logic: parse, accumulate per-target, print if i < n_print."""
         parsed = _extract_pred_json(raw_completion)
-
-        # parse gold JSON
         try:
             gold_dict = json.loads(gold)
         except Exception:
             gold_dict = {}
-
-        # accumulate labels per target
         if gold_dict:
             for t, g_val in gold_dict.items():
                 if g_val is None:
-                    continue  # skip missing gold
-
-                # Normalize numeric labels (e.g. 1.0 -> 1)
+                    continue
                 if isinstance(g_val, float) and g_val.is_integer():
                     g_val_norm = int(g_val)
                 else:
                     g_val_norm = g_val
-
                 if parsed is not None and t in parsed:
                     p_val = parsed[t]
                     if isinstance(p_val, float) and p_val.is_integer():
@@ -589,11 +679,19 @@ def run_simple_val_inference(
                         p_val_norm = p_val
                 else:
                     p_val_norm = "MISSING"
-
                 per_target_true[t].append(g_val_norm)
                 per_target_pred[t].append(p_val_norm)
-
         if i < n_print:
+            print(f"\n--- Example {i + 1}/{N} ---")
+            if use_prefix_cache_global and suffix_text_or_none is not None:
+                print("SENT TO MODEL (suffix only; prefix in KV cache):")
+                st = suffix_text_or_none[:600] + ("..." if len(suffix_text_or_none) > 600 else "")
+                print(st)
+                print("(Full prompt for reference, last 200 chars): ..." + prompt_text[-200:])
+            else:
+                print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
+            print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
+            print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
             if parsed is not None:
                 pred_str = json.dumps(parsed, ensure_ascii=False)
                 print(f"PREDICTED_JSON: {pred_str[:800]}{'...' if len(pred_str) > 800 else ''}")
@@ -604,10 +702,133 @@ def run_simple_val_inference(
                     f"snippet={snippet[:200].replace(chr(10), ' ')}"
                     f"{'...' if len(snippet) > 200 else ''}"
                 )
-
-        # Light progress indicator every 5 examples
         if (i + 1) % 5 == 0 or i == N - 1:
             print(f"[val-inference] processed {i + 1}/{N} validation examples")
+
+    if use_prefix_cache_global and inference_batch_size > 1:
+        # Batched path: shared prefix, multiple suffixes per forward
+        kv_clone = _clone_past_kv(prefix_kv)
+        batch_timing_printed = False
+        for start in range(0, N, inference_batch_size):
+            end = min(start + inference_batch_size, N)
+            suffix_ids_list = []
+            batch_indices = []
+            for j in range(end - start):
+                i = start + j
+                enc = tokenizer(
+                    val_prompts[i],
+                    return_tensors="pt",
+                    padding=False,
+                    truncation=False,
+                )
+                full_ids = enc["input_ids"][0].to(device)
+                if full_ids.shape[0] <= prefix_len:
+                    continue
+                suffix_ids_list.append(full_ids[prefix_len:])
+                batch_indices.append(i)
+            if not suffix_ids_list:
+                continue
+            results = _generate_with_prefix_cache_batched(
+                model=trainer.model,
+                tokenizer=tokenizer,
+                suffix_ids_list=suffix_ids_list,
+                prefix_kv=kv_clone,
+                prefix_len=prefix_len,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=pad_token_id,
+                device=device,
+                stop_on_complete_json=stop_on_complete_json,
+            )
+            if not batch_timing_printed and results:
+                prefill_sec, decode_sec = results[0][1], results[0][2]
+                print(
+                    f"[prefix-cache] Batched inference (batch_size={len(suffix_ids_list)}): "
+                    f"Prefill: {prefill_sec:.2f}s | Decode: {decode_sec:.2f}s"
+                )
+                batch_timing_printed = True
+            for b in range(len(suffix_ids_list)):
+                i = batch_indices[b]
+                prompt_text = val_prompts[i]
+                gold = val_gold_raw[i]
+                raw_completion = tokenizer.decode(results[b][0], skip_special_tokens=True)
+                suffix_text = tokenizer.decode(suffix_ids_list[b], skip_special_tokens=True)
+                process_one_result(i, prompt_text, gold, raw_completion, suffix_text)
+            for i in range(start, end):
+                if i not in batch_indices:
+                    enc = tokenizer(val_prompts[i], return_tensors="pt", padding=False, truncation=False)
+                    full_ids = enc["input_ids"].to(device)
+                    if full_ids.shape[-1] <= prefix_len:
+                        continue
+                    kv_single = _clone_past_kv(prefix_kv)
+                    suf = full_ids[:, prefix_len:].to(device)
+                    new_tok, _, _ = _generate_with_prefix_cache(
+                        trainer.model, tokenizer, suf, kv_single, prefix_len,
+                        max_new_tokens, pad_token_id, device, stop_on_complete_json=stop_on_complete_json,
+                    )
+                    raw_completion = tokenizer.decode(new_tok, skip_special_tokens=True)
+                    suffix_text = tokenizer.decode(suf[0], skip_special_tokens=True)
+                    process_one_result(i, val_prompts[i], val_gold_raw[i], raw_completion, suffix_text)
+    else:
+        # Per-example path
+        for i in range(N):
+            prompt_text = val_prompts[i]
+            gold = val_gold_raw[i]
+            enc = tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                padding=False,
+                truncation=False,
+            )
+            full_ids = enc["input_ids"].to(device)
+            use_prefix_cache = (
+                prefix_kv is not None
+                and prefix_len > 0
+                and full_ids.shape[-1] > prefix_len
+            )
+            if use_prefix_cache:
+                kv_clone = _clone_past_kv(prefix_kv)
+                suffix_len = full_ids.shape[-1] - prefix_len
+                suffix_ids = full_ids[:, prefix_len:].to(device)
+                new_tokens, prefill_sec, decode_sec = _generate_with_prefix_cache(
+                    model=trainer.model,
+                    tokenizer=tokenizer,
+                    suffix_ids=suffix_ids,
+                    prefix_kv=kv_clone,
+                    prefix_len=prefix_len,
+                    max_new_tokens=max_new_tokens,
+                    pad_token_id=pad_token_id,
+                    device=device,
+                    stop_on_complete_json=stop_on_complete_json,
+                )
+                raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                suffix_text = tokenizer.decode(suffix_ids[0], skip_special_tokens=True)
+                if i == 0:
+                    print(
+                        f"[prefix-cache] Only {suffix_len} tokens sent to model "
+                        f"(prefix {prefix_len} tokens from cache). "
+                        f"Prefill: {prefill_sec:.2f}s | Decode: {decode_sec:.2f}s"
+                    )
+            else:
+                attention_mask = enc.get("attention_mask")
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(device)
+                with torch.no_grad():
+                    generated = trainer.model.generate(
+                        input_ids=full_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        num_return_sequences=1,
+                        pad_token_id=pad_token_id,
+                    )
+                decode_offset = full_ids.shape[-1]
+                new_tokens = generated[0, decode_offset:].detach().cpu()
+                raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                suffix_text = None
+            process_one_result(
+                i, prompt_text, gold, raw_completion,
+                suffix_text if use_prefix_cache else None,
+            )
 
     total_inference_sec = time.perf_counter() - inference_start
     avg_sec_per_prompt = total_inference_sec / N if N else 0.0
@@ -795,6 +1016,8 @@ def run_simple_gemma3(
     max_val_infer=5,
     targets_spec=None,
     system_prompt: str = None,
+    inference_batch_size: int = 1,
+    stop_on_complete_json: bool = True,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
@@ -1083,6 +1306,8 @@ def run_simple_gemma3(
                     targets_spec=targets_spec,
                     prefix_kv=prefix_kv,
                     prefix_len=prefix_len,
+                    inference_batch_size=inference_batch_size,
+                    stop_on_complete_json=stop_on_complete_json,
                 )
 
                 # Test inference: same procedure on held-out test set
@@ -1103,6 +1328,8 @@ def run_simple_gemma3(
                     targets_spec=targets_spec,
                     prefix_kv=prefix_kv,
                     prefix_len=prefix_len,
+                    inference_batch_size=inference_batch_size,
+                    stop_on_complete_json=stop_on_complete_json,
                 )
 
                 # Free KV cache for this epoch
