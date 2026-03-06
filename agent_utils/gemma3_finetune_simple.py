@@ -411,17 +411,23 @@ def run_simple_val_inference(
         )
         full_ids = enc["input_ids"].to(device)
 
-        if prefix_kv is not None and prefix_len > 0:
-            # Reuse cached system-prompt KV — only forward the suffix
-            suffix_ids = full_ids[:, prefix_len:]
+        use_prefix_cache = (
+            prefix_kv is not None
+            and prefix_len > 0
+            and full_ids.shape[-1] > prefix_len  # need at least one suffix token
+        )
+        if use_prefix_cache:
+            # Reuse cached system-prompt KV. Pass full input_ids (prefix + suffix) so
+            # the library infers cache_position correctly; it uses the cache for the
+            # prefix and only runs forward on the suffix.
             attn_mask = torch.ones(
-                1, prefix_len + suffix_ids.shape[-1],
+                1, full_ids.shape[-1],
                 dtype=torch.long, device=device,
             )
             kv_clone = _clone_past_kv(prefix_kv)
             with torch.no_grad():
                 generated = trainer.model.generate(
-                    input_ids=suffix_ids,
+                    input_ids=full_ids,
                     attention_mask=attn_mask,
                     past_key_values=kv_clone,
                     max_new_tokens=max_new_tokens,
@@ -429,7 +435,7 @@ def run_simple_val_inference(
                     num_return_sequences=1,
                     pad_token_id=pad_token_id,
                 )
-            decode_offset = suffix_ids.shape[-1]
+            decode_offset = full_ids.shape[-1]
         else:
             attention_mask = enc.get("attention_mask")
             if attention_mask is not None:
