@@ -59,9 +59,12 @@ def _strip_bom(s: str) -> str:
 
 def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
                             system_prompt: str = None) -> str:
-    """Build a chat-formatted string using the tokenizer's chat template.
+    """Build a chat-formatted string using the tokenizer's official chat template.
 
-    When *system_prompt* is provided it is passed as a ``system`` role message.
+    All special tokens (e.g. Gemma 3's <bos>, <start_of_turn>user, <end_of_turn>,
+    <start_of_turn>model) come from the tokenizer's apply_chat_template; we do
+    not create or hardcode any sequence tokens ourselves.
+    When *system_prompt* is provided it is passed as a ``system`` role message;
     Gemma 3's template folds it into the first user turn automatically.
     """
     instruction = _strip_bom(instruction)
@@ -80,14 +83,11 @@ def _build_chat_text_simple(tokenizer, instruction: str, answer: str = None,
             tokenize=False,
             add_generation_prompt=(answer is None),
         )
-    # Fallback for tokenizers without chat templates
-    text = ""
-    if system_prompt:
-        text += f"<|system|>\n{system_prompt}\n"
-    text += f"<|user|>\n{instruction}"
-    if answer is not None:
-        text += f"\n<|assistant|>\n{answer}"
-    return text
+    # Fallback only for tokenizers without a chat template (not used for Gemma 3).
+    raise ValueError(
+        "This runner requires a tokenizer with apply_chat_template (e.g. Gemma 3). "
+        "Do not use a tokenizer that lacks an official chat template."
+    )
 
 
 def _token_len(text: str, tokenizer) -> int:
@@ -148,20 +148,21 @@ def _generate_with_prefix_cache(
     max_new_tokens: int,
     pad_token_id: int | None,
     device: torch.device,
-) -> torch.Tensor:
+):
     """
     Autoregressive generation using a precomputed prefix KV cache.
     Only the suffix tokens are run through the model; then we decode one token at a time.
-    Returns a 1D tensor of new token ids (shape: (num_generated,)) on CPU.
+    Returns (new_token_ids, prefill_sec, decode_sec) where new_token_ids is a 1D tensor on CPU.
     """
     eos_token_id = getattr(tokenizer, "eos_token_id", None) or pad_token_id
     batch_size = suffix_ids.shape[0]
     suffix_len = suffix_ids.shape[1]
 
-    # Prefill: forward the suffix with the prefix cache
+    # Prefill: forward the suffix with the prefix cache (only these tokens hit the model)
     position_ids = torch.arange(
         prefix_len, prefix_len + suffix_len, dtype=torch.long, device=device
     ).unsqueeze(0).expand(batch_size, -1)
+    t0 = time.perf_counter()
     with torch.no_grad():
         outputs = model(
             input_ids=suffix_ids,
@@ -169,18 +170,21 @@ def _generate_with_prefix_cache(
             past_key_values=prefix_kv,
             use_cache=True,
         )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    prefill_sec = time.perf_counter() - t0
     logits = outputs.logits  # (batch, suffix_len, vocab_size)
     past_key_values = outputs.past_key_values
 
-    # Take the last position's logits to get the first generated token
-    next_token_logits = logits[:, -1, :]  # (batch, vocab_size)
-    next_tokens = next_token_logits.argmax(dim=-1, keepdim=True)  # (batch, 1)
+    next_token_logits = logits[:, -1, :]
+    next_tokens = next_token_logits.argmax(dim=-1, keepdim=True)
     generated = [next_tokens]
 
     # Decode loop: one token at a time
     cur_len = suffix_len + 1
+    t_decode = time.perf_counter()
     for _ in range(max_new_tokens - 1):
-        next_token = next_tokens  # (batch, 1)
+        next_token = next_tokens
         if eos_token_id is not None and (next_token == eos_token_id).all().item():
             break
         position_ids = torch.full(
@@ -198,10 +202,12 @@ def _generate_with_prefix_cache(
         next_tokens = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated.append(next_tokens)
         cur_len += 1
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    decode_sec = time.perf_counter() - t_decode
 
-    # Stack: (batch, num_generated), then take row 0 and move to CPU
     out = torch.cat(generated, dim=1)[0].detach().cpu()
-    return out
+    return out, prefill_sec, decode_sec
 
 
 def _clone_past_kv(past_kv):
@@ -508,7 +514,7 @@ def run_simple_val_inference(
             kv_clone = _clone_past_kv(prefix_kv)
             suffix_len = full_ids.shape[-1] - prefix_len
             suffix_ids = full_ids[:, prefix_len:].to(device)
-            new_tokens = _generate_with_prefix_cache(
+            new_tokens, prefill_sec, decode_sec = _generate_with_prefix_cache(
                 model=trainer.model,
                 tokenizer=tokenizer,
                 suffix_ids=suffix_ids,
@@ -519,10 +525,12 @@ def run_simple_val_inference(
                 device=device,
             )
             raw_completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            suffix_text = tokenizer.decode(suffix_ids[0], skip_special_tokens=True)
             if i == 0:
                 print(
-                    f"[prefix-cache] Inference: suffix_only={suffix_len} tokens "
-                    f"(prefix={prefix_len} cached)"
+                    f"[prefix-cache] Only {suffix_len} tokens sent to model "
+                    f"(prefix {prefix_len} tokens from cache). "
+                    f"Prefill: {prefill_sec:.2f}s | Decode: {decode_sec:.2f}s"
                 )
         else:
             attention_mask = enc.get("attention_mask")
@@ -544,7 +552,12 @@ def run_simple_val_inference(
         # Pretty-print only for the first n_print examples
         if i < n_print:
             print(f"\n--- Example {i + 1}/{N} ---")
-            print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
+            if use_prefix_cache:
+                print("SENT TO MODEL (suffix only; prefix in KV cache):")
+                print(suffix_text[:600] + ("..." if len(suffix_text) > 600 else ""))
+                print("(Full prompt for reference, last 200 chars): ..." + prompt_text[-200:])
+            else:
+                print(f"PROMPT (last 350 chars): ...{prompt_text[-350:]}")
             print(f"GOLD: {gold[:500]}{'...' if len(gold) > 500 else ''}")
             print(f"GENERATED: {raw_completion[:800]}{'...' if len(raw_completion) > 800 else ''}")
 
