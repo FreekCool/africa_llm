@@ -74,6 +74,7 @@ def train_validate(
     ema_alpha=0.25,
     reg_weight=1.0,
     targets_spec=None,
+    gemma_model="27b",  # for simple_gemma3: "4b" | "27b" or full HuggingFace model_id
 ):
     SUPPORTED_MODELS = [
         "llama3",
@@ -217,6 +218,7 @@ def train_validate(
             early_stopping_patience=early_stopping_patience,
             epochs=epochs,
             learning_rates=learning_rates,
+            gemma_model=gemma_model,
         )
 
     if mtype == "ilora_llama3":

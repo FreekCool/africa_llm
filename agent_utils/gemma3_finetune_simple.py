@@ -428,6 +428,12 @@ def run_simple_val_inference(
 
 # ── main entry point ──────────────────────────────────────────────────
 
+GEMMA_MODEL_IDS = {
+    "4b": "google/gemma-3-4b-it",
+    "27b": "google/gemma-3-27b-it",
+}
+
+
 def run_simple_gemma3(
     train_df,
     test_df,
@@ -447,18 +453,24 @@ def run_simple_gemma3(
     epochs=5,
     learning_rates=(1e-4,),
     grad_accum_steps=4,
-    model_id="google/gemma-3-27b-it",
+    gemma_model="27b",
     max_val_infer=5,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
 
     Closely mirrors ``run_fine_tuned_llama3_ilora`` but:
-      - Uses Gemma-3 12B-IT (configurable via ``model_id``)
+      - Uses Gemma-3 4B-IT or 27B-IT (``gemma_model``: "4b" | "27b") or full ``model_id``
       - Trains with plain SFTTrainer (no slot tokens, no custom loss)
       - The assistant answer is the raw JSON string from ``answer_col``
     """
     mtype = "simple_gemma3"
+
+    if gemma_model in GEMMA_MODEL_IDS:
+        model_id = GEMMA_MODEL_IDS[gemma_model]
+    else:
+        model_id = gemma_model  # full HuggingFace model id
+    print(f"Gemma model: {gemma_model} -> {model_id}")
 
     # ── GPU / device ──────────────────────────────────────────────────
     gpu_avail = torch.cuda.is_available()
