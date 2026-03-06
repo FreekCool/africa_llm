@@ -1,5 +1,5 @@
-# On your Mac, in your repo:
-echo '*.ipynb filter=nbstripout' >> .gitattributes
-pip install nbstripout
-nbstripout --install
-git add .gitattributes && git commit -m "Add nbstripout filter"*.ipynb filter=nbstripout
+echo '*.ipynb filter=nbstripout' > .gitattributes
+cat .gitattributes  # should show ONLY: *.ipynb filter=nbstripout
+git add .gitattributes
+git commit -m "Fix .gitattributes"
+git push
