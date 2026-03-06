@@ -1,5 +1,1 @@
-echo '*.ipynb filter=nbstripout' > .gitattributes
-cat .gitattributes  # should show ONLY: *.ipynb filter=nbstripout
-git add .gitattributes
-git commit -m "Fix .gitattributes"
-git push
+*.ipynb filter=nbstripout
