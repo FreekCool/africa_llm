@@ -436,17 +436,24 @@ def run_simple_val_inference(
             and full_ids.shape[-1] > prefix_len  # need at least one suffix token
         )
         if use_prefix_cache:
-            # Reuse cached system-prompt KV. Pass full input_ids (prefix + suffix) so
-            # the library infers cache_position correctly; it uses the cache for the
-            # prefix and only runs forward on the suffix.
+            # Only forward the suffix tokens; the prefix is already in the
+            # KV cache.  generate() infers cache_position from the cache
+            # length so RoPE positions are correct automatically.
+            suffix_ids = full_ids[:, prefix_len:]
             attn_mask = torch.ones(
-                1, full_ids.shape[-1],
+                1, prefix_len + suffix_ids.shape[-1],
                 dtype=torch.long, device=device,
             )
             kv_clone = _clone_past_kv(prefix_kv)
+            if i == 0:
+                print(
+                    f"[prefix-cache] Inference: full_seq={full_ids.shape[-1]}, "
+                    f"prefix={prefix_len}, suffix={suffix_ids.shape[-1]} tokens "
+                    f"(skipping {prefix_len} cached tokens)"
+                )
             with torch.no_grad():
                 generated = trainer.model.generate(
-                    input_ids=full_ids,
+                    input_ids=suffix_ids,
                     attention_mask=attn_mask,
                     past_key_values=kv_clone,
                     max_new_tokens=max_new_tokens,
@@ -454,7 +461,7 @@ def run_simple_val_inference(
                     num_return_sequences=1,
                     pad_token_id=pad_token_id,
                 )
-            decode_offset = full_ids.shape[-1]
+            decode_offset = suffix_ids.shape[-1]
         else:
             attention_mask = enc.get("attention_mask")
             if attention_mask is not None:

@@ -13,6 +13,9 @@ env/
 # results
 results/
 
+# Claude
+.claude/
+
 # secrets
 .env
 *.key
