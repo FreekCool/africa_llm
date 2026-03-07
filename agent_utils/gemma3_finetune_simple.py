@@ -1289,7 +1289,7 @@ def run_simple_gemma3(
                     base_run_dir, f"trainer_lr{learning_rate}_seed{train_val_seed}"
                 )
                 model_save_dir = os.path.join(
-                    base_run_dir, f"{mtype}_{gemma_model}_lr{learning_rate}_seed{train_val_seed}"
+                    base_run_dir, f"{mtype}_{gemma_model}_lr{learning_rate}_seed{train_val_seed}_{run_id}"
                 )
                 os.makedirs(trainer_output_dir, exist_ok=True)
                 os.makedirs(model_save_dir, exist_ok=True)
