@@ -54,6 +54,11 @@ from .utils import (
     insert_text_once,
     _extract_last_json,  # robust JSON substring extractor used in main pipeline
 )
+# Key aliases: model may output different key names than gold (e.g. resource_distribution_gender vs resource_distribution_for_gender)
+try:
+    from .utils import _EVAL_KEY_ALIASES
+except ImportError:
+    _EVAL_KEY_ALIASES = {}
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -608,6 +613,53 @@ def _string_partial_match(gold, pred) -> bool:
 _PRED_NULL_SENTINEL = "__NULL_PRED__"
 
 
+def _resolve_pred_value(parsed: dict | None, gold_key: str) -> object:
+    """Get prediction for gold key, using canonical key or _EVAL_KEY_ALIASES."""
+    if not parsed:
+        return None
+    p = parsed.get(gold_key)
+    if p is not None:
+        return p
+    for alias in _EVAL_KEY_ALIASES.get(gold_key, []):
+        if alias in parsed:
+            return parsed[alias]
+    return None
+
+
+def _normalize_pred_for_metric(p_val: object, g_val: object) -> object:
+    """
+    Normalize predicted value so it is comparable to gold for accuracy.
+    E.g. gold=3 (int), pred="3" (str) -> return 3 so equality works.
+    """
+    if p_val is None:
+        return None
+    if g_val is None:
+        return p_val
+    if type(g_val) == type(p_val):
+        if isinstance(g_val, float) and g_val.is_integer() and isinstance(p_val, float) and p_val.is_integer():
+            return int(p_val)
+        return p_val
+    if isinstance(g_val, int) and not isinstance(g_val, bool):
+        if isinstance(p_val, float) and p_val.is_integer():
+            return int(p_val)
+        if isinstance(p_val, str):
+            try:
+                return int(float(p_val))
+            except (ValueError, TypeError):
+                pass
+    if isinstance(g_val, float):
+        if isinstance(p_val, (int, float)):
+            return float(p_val) if isinstance(p_val, int) else p_val
+        if isinstance(p_val, str):
+            try:
+                return float(p_val)
+            except (ValueError, TypeError):
+                pass
+    if isinstance(g_val, str):
+        return str(p_val).strip()
+    return p_val
+
+
 def run_simple_val_inference(
     trainer,
     tokenizer,
@@ -677,12 +729,9 @@ def run_simple_val_inference(
                     g_val_norm = int(g_val)
                 else:
                     g_val_norm = g_val
-                if parsed is not None and t in parsed:
-                    p_val = parsed[t]
-                    if isinstance(p_val, float) and p_val.is_integer():
-                        p_val_norm = int(p_val)
-                    else:
-                        p_val_norm = p_val
+                p_val = _resolve_pred_value(parsed, t)
+                if p_val is not None:
+                    p_val_norm = _normalize_pred_for_metric(p_val, g_val_norm)
                 else:
                     p_val_norm = "MISSING"
                 per_target_true[t].append(g_val_norm)
@@ -1360,23 +1409,39 @@ def run_simple_gemma3(
                 if gpu_avail:
                     torch.cuda.empty_cache()
 
-                # Save model + tokenizer after each epoch (overwrites previous epoch)
-                if model_save_dir is not None:
-                    print(f"[save] Saving adapter/tokenizer to {model_save_dir}")
+                # Early stopping + save best model
+                def _save_checkpoint(reason: str):
+                    if model_save_dir is None:
+                        return
+                    print(f"[save] {reason} — saving adapter/processor to {model_save_dir}")
                     model.save_pretrained(model_save_dir)
-                    tokenizer.save_pretrained(model_save_dir)
+                    processor.save_pretrained(model_save_dir)
+                    run_cfg = {
+                        "model_id": model_id,
+                        "system_prompt": system_prompt,
+                        "prompt_template": prompt,
+                        "max_tokens": max_tokens,
+                        "max_new_tokens": max_new_tokens,
+                        "targets_spec": targets_spec,
+                        "gemma_model": gemma_model,
+                    }
+                    with open(os.path.join(model_save_dir, "run_config.json"), "w") as _f:
+                        json.dump(run_cfg, _f, indent=2, ensure_ascii=False)
 
-                # Early stopping
                 if eval_loss is not None:
                     if eval_loss < best_eval_loss:
                         best_eval_loss = eval_loss
                         no_improvement_counter = 0
+                        _save_checkpoint(f"New best eval_loss={eval_loss:.4f}")
                     else:
                         no_improvement_counter += 1
 
                     if no_improvement_counter >= early_stopping_patience:
                         print(f"Early stopping after {ep+1} epochs.")
                         break
+                else:
+                    # No eval loss available — save every epoch as fallback
+                    _save_checkpoint(f"No eval_loss (epoch {ep})")
 
             # ── Cleanup ───────────────────────────────────────────────
             print("Training done, cleaning up")
