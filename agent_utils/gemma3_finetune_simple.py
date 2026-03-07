@@ -680,6 +680,8 @@ def run_simple_val_inference(
     prefix_len: int = 0,
     inference_batch_size: int = 1,
     stop_on_complete_json: bool = True,
+    gemma_model: str | None = None,
+    run_id: str | None = None,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -1033,7 +1035,9 @@ def run_simple_val_inference(
         lr_str = f"{learning_rate}" if learning_rate is not None else "na"
         ep_str = f"{epoch}" if epoch is not None else "na"
         seed_str = f"{seed}" if seed is not None else "na"
-        csv_name = f"{mtype}_{split_name}_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}.csv"
+        model_str = gemma_model if gemma_model is not None else "na"
+        ts_str = run_id if run_id is not None else datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_name = f"{mtype}_{model_str}_{split_name}_metrics_lr{lr_str}_seed{seed_str}_epoch{ep_str}_{ts_str}.csv"
         csv_path = os.path.join(results_folder, csv_name)
         pd.DataFrame(rows).to_csv(csv_path, index=False)
         print(f"[{split_name}-metrics] Saved per-target metrics + timing to {csv_path}")
@@ -1285,7 +1289,7 @@ def run_simple_gemma3(
                     base_run_dir, f"trainer_lr{learning_rate}_seed{train_val_seed}"
                 )
                 model_save_dir = os.path.join(
-                    base_run_dir, f"{mtype}_lr{learning_rate}_seed{train_val_seed}"
+                    base_run_dir, f"{mtype}_{gemma_model}_lr{learning_rate}_seed{train_val_seed}"
                 )
                 os.makedirs(trainer_output_dir, exist_ok=True)
                 os.makedirs(model_save_dir, exist_ok=True)
@@ -1380,6 +1384,8 @@ def run_simple_gemma3(
                     prefix_len=prefix_len,
                     inference_batch_size=inference_batch_size,
                     stop_on_complete_json=stop_on_complete_json,
+                    gemma_model=gemma_model,
+                    run_id=run_id,
                 )
 
                 # Test inference: same procedure on held-out test set
@@ -1402,6 +1408,8 @@ def run_simple_gemma3(
                     prefix_len=prefix_len,
                     inference_batch_size=inference_batch_size,
                     stop_on_complete_json=stop_on_complete_json,
+                    gemma_model=gemma_model,
+                    run_id=run_id,
                 )
 
                 # Free KV cache for this epoch
