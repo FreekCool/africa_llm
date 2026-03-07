@@ -603,6 +603,11 @@ def _string_partial_match(gold, pred) -> bool:
     return bool(g_words & p_words)
 
 
+# Sentinel for model predictions that are null (JSON "null"). Used so sklearn
+# metrics get no None values (which raise) and null preds count as wrong.
+_PRED_NULL_SENTINEL = "__NULL_PRED__"
+
+
 def run_simple_val_inference(
     trainer,
     tokenizer,
@@ -902,10 +907,15 @@ def run_simple_val_inference(
             else:
                 y_pred = [p for _, p in pairs]
 
+            # Replace None (model output "null") with a sentinel so sklearn doesn't
+            # raise on mixed-type/None arrays; null preds count as wrong.
+            y_pred_clean = [
+                _PRED_NULL_SENTINEL if p is None else p for p in y_pred
+            ]
             try:
-                acc = accuracy_score(y_true, y_pred)
+                acc = accuracy_score(y_true, y_pred_clean)
                 prec, rec, f1, _ = precision_recall_fscore_support(
-                    y_true, y_pred, average="macro", zero_division=0
+                    y_true, y_pred_clean, average="macro", zero_division=0
                 )
             except Exception:
                 acc = prec = rec = f1 = 0.0
