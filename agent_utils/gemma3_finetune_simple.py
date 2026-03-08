@@ -1198,10 +1198,16 @@ def run_simple_gemma3(
             print(f"\n=== LR {learning_rate} | seed {train_val_seed} | fold {fold_counter} ===")
 
             # ── Train / val split ─────────────────────────────────────
-            train_rows, val_rows = train_test_split(
-                train_df, test_size=val_size, random_state=train_val_seed,
-            )
-            print(f"Train: {len(train_rows)} rows  |  Val: {len(val_rows)} rows")
+            if val_size is not None and val_size <= 0:
+                # Full-train mode: no validation split (e.g. gemma3_finetune_fulltrain.py)
+                train_rows = train_df
+                val_rows = train_df.iloc[0:0]
+                print(f"Train: {len(train_rows)} rows  |  Val: 0 (full-train, no validation split)")
+            else:
+                train_rows, val_rows = train_test_split(
+                    train_df, test_size=val_size, random_state=train_val_seed,
+                )
+                print(f"Train: {len(train_rows)} rows  |  Val: {len(val_rows)} rows")
 
             # ── 1) Build datasets ─────────────────────────────────────
             dataset = build_simple_sft_dataset(
@@ -1296,6 +1302,7 @@ def run_simple_gemma3(
             else:
                 trainer_output_dir = tempfile.mkdtemp(prefix="africa_llm_simple_")
                 model_save_dir = None
+            have_eval = len(val_dataset) > 0
             training_args = TrainingArguments(
                 output_dir=trainer_output_dir,
                 num_train_epochs=1,
@@ -1303,8 +1310,8 @@ def run_simple_gemma3(
                 per_device_eval_batch_size=batch_size,
                 gradient_accumulation_steps=grad_accum_steps,
                 optim="paged_adamw_32bit",
-                do_eval=True,
-                eval_strategy="epoch",
+                do_eval=have_eval,
+                eval_strategy="epoch" if have_eval else "no",
                 save_steps=3000,
                 logging_steps=25,
                 learning_rate=learning_rate,
@@ -1324,7 +1331,7 @@ def run_simple_gemma3(
             trainer = SFTTrainer(
                 model=model,
                 train_dataset=dataset,
-                eval_dataset=val_dataset,
+                eval_dataset=val_dataset if have_eval else None,
                 dataset_text_field="text",
                 max_seq_length=max_tokens,
                 tokenizer=tokenizer,
@@ -1347,9 +1354,11 @@ def run_simple_gemma3(
 
                 trainer.train()
 
-                # Extract losses from log history
+                # Extract losses from log history (eval_loss only when do_eval=True)
                 train_loss = trainer.state.log_history[-1].get("train_loss", None)
-                eval_loss = trainer.state.log_history[-2].get("eval_loss", None)
+                eval_loss = None
+                if have_eval and len(trainer.state.log_history) >= 2:
+                    eval_loss = trainer.state.log_history[-2].get("eval_loss", None)
                 elapsed = time.time() - start_time
 
                 print(f"  train_loss={train_loss}  eval_loss={eval_loss}  "
