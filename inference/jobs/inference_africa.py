@@ -258,7 +258,7 @@ def main():
         run_cfg = json.load(f)
     targets_spec = run_cfg.get("targets_spec") or {}
     target_cols = sorted(targets_spec.keys())
-    pred_columns = ["id", "json_ok", "range_name"] + target_cols
+    pred_columns = ["id", "json_ok", "range_name", "time_sec", "avg_time_sec", "n_ok", "n_seen", "success_pct"] + target_cols
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs(args.output_dir, exist_ok=True)
@@ -293,7 +293,16 @@ def main():
             n_ok += 1
         success_pct = (n_ok / n_seen) * 100.0
 
-        rec = {"id": row_id, "json_ok": json_ok, "range_name": range_name}
+        rec = {
+            "id": row_id,
+            "json_ok": json_ok,
+            "range_name": range_name,
+            "time_sec": t_sec,
+            "avg_time_sec": avg_time,
+            "n_ok": n_ok,
+            "n_seen": n_seen,
+            "success_pct": success_pct,
+        }
         if isinstance(parsed_out, dict):
             for k in target_cols:
                 if k in parsed_out:
