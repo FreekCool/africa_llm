@@ -115,6 +115,7 @@ def load_model_and_tokenizer(adapter_dir: str, cache_dir: str):
 
 
 def setup_agent_utils_import(project_root: str):
+    # Ensure the given project root is on sys.path so we can import agent_utils
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     from agent_utils.gemma3_finetune_simple import _extract_pred_json  # type: ignore
@@ -246,7 +247,8 @@ def main():
         args.adapter_dir,
         args.cache_dir,
     )
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Project root is one level above /inference, where agent_utils lives
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _extract_pred_json = setup_agent_utils_import(project_root)
 
     inference_times: list[float] = []
