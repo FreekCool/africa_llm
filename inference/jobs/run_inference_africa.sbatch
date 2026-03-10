@@ -5,13 +5,13 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus=1
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_h100
 #SBATCH --time=48:00:00
 
 # Static paths (edit these if you move things)
 DATA_PATH="/home/fcool/africa_llm/inference/data/inference_data.csv"
 ADAPTER_DIR="/projects/prjs1308/africa_llm_data/results/inference_models/20260308_205449_simple_gemma3/simple_gemma3_4b_lr0.0001_seed42_20260308_205449"
-OUTPUT_DIR="/home/fcool/africa_llm/inference/results/test_results"
+OUTPUT_DIR="/projects/prjs1308/africa_llm_data/inference_results"
 CACHE_DIR="/projects/prjs1308/huggingface/"
 
 # EDIT THIS QUARTER PER JOB SUBMISSION: 1, 2, 3, or 4
