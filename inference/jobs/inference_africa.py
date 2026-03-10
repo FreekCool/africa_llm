@@ -216,7 +216,25 @@ def main():
 
     print(f"Loaded {len(df)} rows from {args.data_path}")
 
-    # Determine row range
+    # Skip rows whose ids already appear in existing inference CSVs in output_dir
+    processed_ids: set[int] = set()
+    if os.path.isdir(args.output_dir):
+        for fname in os.listdir(args.output_dir):
+            if not (fname.startswith("inference_predictions_") and fname.endswith(".csv")):
+                continue
+            path = os.path.join(args.output_dir, fname)
+            try:
+                tmp = pd.read_csv(path, usecols=["id"])
+                processed_ids.update(tmp["id"].dropna().tolist())
+            except Exception as e:
+                print(f"Warning: could not read ids from {path}: {e}")
+    if processed_ids:
+        before = len(df)
+        df = df[~df["id"].isin(processed_ids)].reset_index(drop=True)
+        skipped = before - len(df)
+        print(f"Skipping {skipped} rows already processed (found {len(processed_ids)} unique processed ids).")
+
+    # Determine row range on the remaining (unprocessed) dataframe
     if args.quarter is not None:
         N = len(df)
         chunk_size = math.ceil(N / 4)
