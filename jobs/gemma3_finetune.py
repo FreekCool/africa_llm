@@ -73,8 +73,8 @@ gemma_model = "4b"  # "4b" | "27b" for simple_gemma3
 
 train_validate(
     mtype="simple_gemma3",      # <── key change
-    train_df=train_df[:30],
-    test_df=test_df[:10],
+    train_df=train_df,
+    test_df=test_df,
     text_col="text",            # column with transcript/post
     target_col="targets_json",  # not used by simple runner, but fine to keep
     prompt=prompt,              # must contain "{}" once for transcript insertion
