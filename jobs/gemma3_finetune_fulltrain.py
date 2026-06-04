@@ -45,11 +45,14 @@ if system_prompt_path.exists():
     print("System prompt length:", len(system_prompt))
     print("User prompt (from inference_prompt.txt):", prompt[:80], "...")
 else:
-    system_prompt = None
-    prompt_path = PROMPTS_DIR / "africa_prompt_2602.txt"
-    prompt = prompt_path.read_text(encoding="utf-8-sig").strip()
-    print("Using single prompt (no system_prompt file found).")
-    print("Length:", len(prompt))
+    # The label-name 2004 codebook is required for a correct experiment. Fail loudly
+    # rather than silently falling back to the numeric africa_prompt_2602.txt, which
+    # would train a numeric codebook against label-name gold and revert the migration.
+    raise FileNotFoundError(
+        f"Required system prompt not found: {system_prompt_path}\n"
+        "Deploy the 2004 label-name codebook there, e.g.\n"
+        f"  cp codebooks/africa_prompt_2004.txt {system_prompt_path}"
+    )
 
 seeds = [42]
 results_dir = '/projects/prjs1308/africa_llm_data/results/testing'
