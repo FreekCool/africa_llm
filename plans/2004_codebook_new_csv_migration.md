@@ -24,16 +24,18 @@ refer to it).
 | **T1 — Codebook fixes** | ✅ **Done** | Example JSON already label-name; §26 `"mentions violent group"1` typo fixed. 27 section names == 27 example-JSON keys. |
 | **T2 — Data loading (3jun)** | ✅ **Done** | `jobs/gemma3_finetune.py` loads 3jun CSV, casts `id`→int64, uses embedded `text`, builds `targets_json` from 27 label cols. 12/12 gates pass: 2300 rows / 0 dropped, 27 keys/row, label-name values, no numeric leakage, 80/20 split. |
 | **T3 — E4 normalization** | ✅ **Done** | `national_unity_narrow == "NOT CODED"` → null before `targets_json`. 7/7 gates pass: 1589 rows blanked, 0 `NOT CODED` remain, 2300 rows unchanged, only that field affected (109 patriotism / 602 not-specifically-patriotic / 1589 null). |
-| **T4 — `TARGETS` rewrite** | ⬜ **Todo** | Re-validated 2026-06-04: **not done.** `TARGETS` in `gemma3_finetune.py:119-180` is still the numeric `allowed` / `topic01` / `binary` version, no conformance assertion, `national_unity_narrow`/`political_opponents_viol` absent. Allowed-sets pre-verified (§2.2); still gated on **D2**. |
+| **T4 — `TARGETS` rewrite** | ✅ **Done** | `TARGETS` is now the data-verified label-name spec (27 fields, §1–§27 order) in the shared helper `agent_utils/africa_dataprep.py`; conditional fields multiclass, 3 new fields added, `multi_value`/`allow_other_paren` flags set. Conformance guard (key-coverage 27↔27 + atomic-subset, Other(*) exempt) passes on the 3jun CSV. D2 resolved: accept `Other(*)` by regex. |
 | **T5 — `accuracy_applicable`** | ✅ **Done** | `run_simple_val_inference` computes `n_applicable` + `accuracy_applicable` per target (subset where gold ≠ `"not applicable"`); printed as `n_app`/`acc_app` columns + both in per-target CSV; overall `accuracy` untouched. Logic test: gated field overall acc 0.889 vs `accuracy_applicable` 0.000; all-N/A field → `n_applicable=0`, `accuracy_applicable` null. Metrics-time `NOT CODED` skip folded into the same change. |
-| **T6 — Port to fulltrain** | ⬜ Todo | — |
-| **T7 — Local dry-run** | ⬜ Todo | — |
-| **T8 — Deploy + launch** | ⬜ Todo | — |
+| **D1/D2 — set scoring** | ✅ **Done** | `run_simple_val_inference` scores `multi_value` fields as order-insensitive sets (`"a;b"==​"b;a"`) for accuracy + applicable-subset accuracy, and accepts `Other(*)` as in_label via `allow_other_paren`. Unit-tested: order-swap 0.667 (set) vs 0.333 (old exact). |
+| **T6 — Shared helper + fulltrain** | ✅ **Done** | `agent_utils/africa_dataprep.py: load_3jun_training_df()` holds all data-prep + TARGETS + conformance. Both jobs call it (fulltrain dropped the old json + numeric `topic_mapping`), so their data-prep is diff-empty. |
+| **T7 — Local dry-run** | ✅ **Done** | Helper run on local 3jun sample: 2300 rows / 0 dropped, 27-key label-name `targets_json`, 0 numeric / 0 `NOT CODED`, E4 nulls=1589, conformance OK, string allowed 8/351/385. (The training-time `[SYSTEM]`/`[ASSISTANT]` print needs the model → Snellius runtime.) |
+| **T8 — Harden + deploy** | 🟡 **Code done; deploy pending** | Missing-system-prompt branch in both jobs now raises `FileNotFoundError` instead of silently loading the numeric `africa_prompt_2602.txt`. **Remaining (manual, Snellius): P2 deploy** — copy `africa_prompt_2004.txt` → `prompts/africa_prompt_system.txt` and place the 3jun CSV at `CSV_PATH`, then launch under Screen on a GPU node. |
 
-**Current correctness caveat:** the job is intentionally *not* yet end-to-end correct.
-Until **T4** lands, `TARGETS` still holds the old numeric `allowed` lists and the
-`topic01`/`resource_distribution_for_gender`/`pro_mf` keys. (T3 done: `targets_json` no
-longer contains `"NOT CODED"`.)
+**Current state:** all code is migrated and locally validated (T3, T4, T5, D1/D2, T6, T7
+done; T8 foot-gun done). The data-prep + `TARGETS` + scoring are end-to-end correct on the
+3jun CSV. The **only** remaining step is the manual Snellius deploy (P2: place the
+label-name codebook at `prompts/africa_prompt_system.txt` and the 3jun CSV at `CSV_PATH`),
+then launch — the job now fails loudly if that codebook is missing.
 
 ---
 
@@ -237,30 +239,29 @@ accuracy is inflated by trivially predicting N/A.)
       `national_unity_narrow == "NOT CODED"` → `None` before `targets_json` is built.
       *(Validated 2026-06-04: present at `gemma3_finetune.py:75-77`, runs before
       `targets_json` build.)*
-- [ ] **T4 — Rewrite `TARGETS` (2.2) + conformance assertion (2.3).** Drop in the
-      data-verified label-name dict; remove `TOPIC01_ALLOWED`/old numeric sets; add the
-      subset assertion. Requires **D2** decided (else the assertion flags `Other(...)`).
+- [x] **T4 — Rewrite `TARGETS` (2.2) + conformance assertion (2.3).** Done in the shared
+      helper `agent_utils/africa_dataprep.py`: data-verified label-name dict, numeric sets
+      removed, subset assertion + key-coverage gate. D2 resolved (accept `Other(*)` regex).
 - [x] **T5 — `accuracy_applicable`/`n_applicable` (2.4)** in `run_simple_val_inference`,
       plus finish committing the existing `NOT CODED` skip. *(Done 2026-06-04: added
       `_is_applicable_gold` helper, per-target `n_applicable` + `accuracy_applicable`,
       printed `n_app`/`acc_app` columns + both CSV columns, timing row mirrors keys.)*
-- [ ] **T6 — Port T3–T4 to `gemma3_finetune_fulltrain.py`.** Both jobs now share ~25
-      lines of non-trivial data-prep (CSV load + E4 + targets_json + TARGETS). **Factor
-      it into one shared helper** (e.g. `agent_utils/africa_dataprep.py:
-      load_3jun_training_df()` returning `(df, TARGETS)`) and call it from both jobs —
-      this earns its complexity by preventing the two jobs from drifting.
-- [ ] **T7 — Local dry-run** on `data_examples/AFRICA-TRAIN-DB-3jun2026.csv` (tiny slice,
-      no GPU needed for data-prep): confirm 0 dropped, `targets_json` has 27 keys with
-      label-name values, E4 nulls ≈1589, conformance assertion passes, and one printed
-      train example shows label-name JSON in `[ASSISTANT]` + the corrected codebook in
-      `[SYSTEM]`.
-- [ ] **T8 — Deploy + launch (P2 + foot-gun).** Copy corrected `africa_prompt_2004.txt` →
+- [x] **D1/D2 — set-based scoring + `Other(*)`.** `run_simple_val_inference` scores
+      `multi_value` fields as order-insensitive sets and accepts `Other(*)` in_label via
+      `allow_other_paren`. D3 resolved: keep all 2300 rows (plan default).
+- [x] **T6 — Shared helper + port `gemma3_finetune_fulltrain.py`.** Done:
+      `agent_utils/africa_dataprep.py: load_3jun_training_df()` returns `(df, TARGETS)`;
+      both jobs call it (fulltrain dropped the json + numeric `topic_mapping` flow).
+- [x] **T7 — Local dry-run** on `data_examples/AFRICA-TRAIN-DB-3jun2026.csv`: 0 dropped,
+      27-key label-name `targets_json`, E4 nulls=1589, conformance passes, string allowed
+      8/351/385. (The `[SYSTEM]`/`[ASSISTANT]` train-print needs the model → Snellius.)
+- [x] **T8 (foot-gun) — done.** Missing-system-prompt branch in both jobs now raises
+      `FileNotFoundError` instead of silently loading the numeric `africa_prompt_2602.txt`.
+- [ ] **T8 (deploy, manual on Snellius).** Copy `africa_prompt_2004.txt` →
       `/projects/prjs1308/africa_llm_data/prompts/africa_prompt_system.txt` AND place
       `AFRICA-TRAIN-DB-3jun2026.csv` at the `CSV_PATH`
-      (`/projects/prjs1308/africa_llm_data/`). Harden the missing-system-prompt branch
-      (`gemma3_finetune.py:104-108`) to **fail loudly** instead of silently loading the
-      numeric `africa_prompt_2602.txt`. Launch under GNU Screen on a GPU node with the
-      `vve_nxt` env.
+      (`/projects/prjs1308/africa_llm_data/`). Launch under GNU Screen on a GPU node with
+      the `vve_nxt` env.
 
 ---
 
@@ -278,21 +279,15 @@ accuracy is inflated by trivially predicting N/A.)
 
 ---
 
-## 5. Open decisions (affect scoring; D2 now also gates the T4 assertion)
+## 5. Open decisions — RESOLVED 2026-06-04
 
-- **D1 (S1) — `;` multi-value scoring.** `language`, `topic`,
-  `resource_distribution_by_whom1`, `resource_distribution_for_whom1` are scored by exact
-  full-string match today (`"a;b"` ≠ `"b;a"`). Switch to set-based comparison?
-  *(Recommended.)*
-- **D2 (S2) — `Other(<lang>)`.** `language` has 15 distinct `Other(...)` free-form values
-  (≈216 rows total). Treat any `Other(*)` as in-label by pattern? **Now elevated: this is
-  the only source of out-of-codebook values, so T4's conformance assertion needs a rule
-  for it.** *(Recommended: accept `Other(*)` by regex.)*
-- **D3 (S5) — CSV hygiene.** 3jun has 4 duplicate `id`s and 8 blank-`topic` rows. Drop or
-  keep? *(Currently kept — plan default.)*
-
-If undecided: T3, T5, T6, T7 proceed unaffected. **T4's assertion needs at least a D2
-rule** (or it must exempt `Other(...)` explicitly) to pass.
+- **D1 (S1) — `;` multi-value scoring.** ✅ **Set-based comparison.** `multi_value` fields
+  (`language`, `topic`, `resource_distribution_by_whom1`, `resource_distribution_for_whom1`)
+  are canonicalized to sorted atoms before accuracy/PRF, so `"a;b" == "b;a"`.
+- **D2 (S2) — `Other(<lang>)`.** ✅ **Accept `Other(*)` by regex.** Exempt from the
+  conformance assertion and counted in_label via `allow_other_paren` on `language`.
+- **D3 (S5) — CSV hygiene.** ✅ **Keep all 2300 rows** (plan default). The 4 duplicate-id
+  re-annotations and 8 blank-`topic` rows are retained (≈0.5%, blank topic → null).
 
 ---
 
