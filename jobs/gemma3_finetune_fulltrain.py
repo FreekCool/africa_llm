@@ -6,11 +6,6 @@ import sys
 print(sys.version)
 
 import os
-import json
-import torch
-import random
-import pandas as pd
-from tqdm import tqdm
 from pathlib import Path
 
 # --- make sure Python can find the repo root ---
@@ -20,103 +15,20 @@ sys.path.insert(0, PROJECT_ROOT)
 
 import agent_utils
 from agent_utils.utils import train_validate
+from agent_utils.africa_dataprep import load_3jun_training_df
 
 # - test whether utils loaded
 agent_utils.test_function()
 
 CACHE_DIR = '/projects/prjs1308/huggingface/'
 
-TOPIC01_ALLOWED = [
-    "NO TOPIC",
-    "ECONOMY",
-    "CIVIL RIGHTS",
-    "HEALTH",
-    "AGRICULTURE",
-    "LABOR",
-    "EDUCATION",
-    "ENVIRONMENT",
-    "ENERGY",
-    "IMMIGRATION",
-    "TRANSPORTATION",
-    "LAW AND CRIME",
-    "SOCIAL WELFARE",
-    "HOUSING",
-    "DOMESTIC COMMERCE",
-    "DEFENSE",
-    "TECHNOLOGY",
-    "FOREIGN TRADE",
-    "INTERNATIONAL AFFAIRS",
-    "GOVERNMENT OPERATIONS",
-    "PUBLIC LANDS",
-    "CULTURE",
-    "ETHNICITY"
-]
+# Same 3jun data-prep + 2004 TARGETS as gemma3_finetune.py (shared helper). Full-train
+# uses the entire dataset as train with no validation/test split.
+CSV_PATH = Path("/projects/prjs1308/africa_llm_data/AFRICA-TRAIN-DB-3jun2026.csv")
+df, TARGETS = load_3jun_training_df(CSV_PATH)
 
-topic_mapping = {
-    0: 'NO TOPIC',
-    1: 'ECONOMY',
-    2: 'CIVIL RIGHTS',
-    3: 'HEALTH',
-    4: 'AGRICULTURE',
-    5: 'LABOR',
-    6: 'EDUCATION',
-    7: 'ENVIRONMENT',
-    8: 'ENERGY',
-    9: 'IMMIGRATION',
-    10: 'TRANSPORTATION',
-    12: 'LAW AND CRIME',
-    13: 'SOCIAL WELFARE',
-    14: 'HOUSING',
-    15: 'DOMESTIC COMMERCE',
-    16: 'DEFENSE',
-    17: 'TECHNOLOGY',
-    18: 'FOREIGN TRADE',
-    19: 'INTERNATIONAL AFFAIRS',
-    20: 'GOVERNMENT OPERATIONS',
-    21: 'PUBLIC LANDS',
-    23: 'CULTURE',
-    24: 'ETHNICITY'
-}
-
-json_path = Path("/projects/prjs1308/africa_llm_data/africa_jsons/african_videos.json")
-
-with json_path.open("r", encoding="utf-8") as f:
-    records = json.load(f)
-
-print("N records:", len(records))
-
-df = pd.json_normalize(records)
-
-for col in df.columns:
-    if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
-        df[col] = df[col].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x)
-
-text_idx = df.columns.get_loc("text")
-target_cols = list(df.columns[text_idx + 1:])
-
-mask_all_nan = df[target_cols].isna().all(axis=1)
-print("Dropping rows with all targets NaN:", int(mask_all_nan.sum()), "/", len(df))
-df = df.loc[~mask_all_nan].reset_index(drop=True)
-
-df["topic01"] = pd.to_numeric(df["topic01"], errors="coerce").astype("Int64").map(topic_mapping)
-
-# Full train: no train/test split — use entire df as train
 train_df = df.copy()
-
-def add_targets_json(df_):
-    df_["targets_json"] = df_.apply(
-        lambda row: json.dumps(
-            {c: (None if pd.isna(row[c]) else row[c]) for c in target_cols},
-            ensure_ascii=False,
-        ),
-        axis=1,
-    )
-
-add_targets_json(train_df)
-
-# Empty test set (same columns, zero rows)
-test_df = train_df.iloc[0:0].copy()
-
+test_df = df.iloc[0:0].copy()   # empty test set (same columns, zero rows)
 print("Train rows:", len(train_df))
 print("Test rows:", len(test_df))
 
@@ -138,62 +50,6 @@ else:
     prompt = prompt_path.read_text(encoding="utf-8-sig").strip()
     print("Using single prompt (no system_prompt file found).")
     print("Length:", len(prompt))
-
-TARGETS = {
-    "language": {"type": "multiclass", "allowed": [1,2,3,4,5,6,7,8,99]},
-    "resource_distribution_by_whom1": {"type": "multiclass", "allowed": [3,2,1,0,-1,99]},
-    "resource_distribution_for_whom1": {"type": "multiclass", "allowed": [1,0,-1,99]},
-    "climate_change": {"type": "multiclass", "allowed": [0,1,2,99]},
-    "topic01": {"type": "multiclass", "allowed": TOPIC01_ALLOWED},
-    "pro_us": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_russia": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_china": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_un": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_imf": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_democracy": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "politics": {"type": "binary", "allowed": [0,1,99]},
-    "domestic_politics": {"type": "binary", "allowed": [0,1,99]},
-    "foreign_politics": {"type": "binary", "allowed": [0,1,99]},
-    "resource_distribution": {"type": "binary", "allowed": [0,1,99]},
-    "resource_distribution_for_gender": {"type": "binary", "allowed": [0,1,99]},
-    "anti_western": {"type": "binary", "allowed": [0,1,99]},
-    "national_unity": {"type": "binary", "allowed": [0,1,99]},
-    "subgroup_unity": {"type": "binary", "allowed": [0,1,99]},
-    "african_unity": {"type": "binary", "allowed": [0,1,99]},
-    "political_opponents": {"type": "binary", "allowed": [0,1,99]},
-    "religion": {"type": "binary", "allowed": [0,1,99]},
-    "resource_distribution_for_whom_ethnic1": {
-        "type": "string",
-        "allowed": [],
-        "eval": {"metric": "exact", "normalize": ["strip", "lower", "collapse_ws"], "empty_allowed": True, "track_unique_incorrect": True, "max_unique_incorrect": 200},
-    },
-    "resource_distribution_for_whom_region1": {
-        "type": "string",
-        "allowed": [],
-        "eval": {"metric": "exact", "normalize": ["strip", "lower", "collapse_ws"], "empty_allowed": True, "track_unique_incorrect": True, "max_unique_incorrect": 200},
-    },
-    "subgroup_unity_text": {
-        "type": "string",
-        "allowed": [],
-        "eval": {"metric": "exact", "normalize": ["strip", "lower", "collapse_ws"], "empty_allowed": True, "track_unique_incorrect": True, "max_unique_incorrect": 500},
-    },
-}
-
-STRING_TARGETS = [
-    "resource_distribution_for_whom_ethnic1",
-    "resource_distribution_for_whom_region1",
-    "subgroup_unity_text",
-]
-for t in STRING_TARGETS:
-    if t not in TARGETS or TARGETS[t].get("type") != "string":
-        continue
-    if t not in train_df.columns:
-        continue
-    vals = train_df[t].dropna().astype(str).str.strip()
-    vals = vals[vals != ""]
-    unique_vals = sorted(vals.unique().tolist())
-    TARGETS[t]["allowed"] = unique_vals
-    print(f"{t}: allowed = {len(unique_vals)} values")
 
 seeds = [42]
 results_dir = '/projects/prjs1308/africa_llm_data/results/testing'
