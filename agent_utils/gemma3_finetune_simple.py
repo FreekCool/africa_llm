@@ -613,6 +613,16 @@ def _string_partial_match(gold, pred) -> bool:
 _PRED_NULL_SENTINEL = "__NULL_PRED__"
 
 
+def _is_applicable_gold(g) -> bool:
+    """False when gold is the conditional-field "not applicable" sentinel.
+
+    Gated fields (e.g. resource_distribution_by_whom1) are mostly N/A, so plain
+    accuracy is inflated by trivially predicting N/A. accuracy_applicable scores
+    only the rows where a real label was expected.
+    """
+    return not (isinstance(g, str) and g.strip().lower() == "not applicable")
+
+
 def _resolve_pred_value(parsed: dict | None, gold_key: str) -> object:
     """Get prediction for gold key, using canonical key or _EVAL_KEY_ALIASES."""
     if not parsed:
@@ -726,6 +736,11 @@ def run_simple_val_inference(
         if gold_dict:
             for t, g_val in gold_dict.items():
                 if g_val is None:
+                    continue
+                # "NOT CODED" marks a field the annotators never coded (currently
+                # only national_unity_narrow). Treat it like a missing gold label so
+                # it is excluded from metrics; training is unaffected.
+                if isinstance(g_val, str) and g_val.strip() == "NOT CODED":
                     continue
                 if isinstance(g_val, float) and g_val.is_integer():
                     g_val_norm = int(g_val)
@@ -900,7 +915,8 @@ def run_simple_val_inference(
     header = (
         f"{'target':25s} {'n':>5s} "
         f"{'acc':>8s} {'prec':>8s} {'rec':>8s} {'f1':>8s} "
-        f"{'answered%':>10s} {'in_label%':>10s}"
+        f"{'answered%':>10s} {'in_label%':>10s} "
+        f"{'n_app':>6s} {'acc_app':>8s}"
     )
     print(header)
     print("-" * len(header))
@@ -917,6 +933,7 @@ def run_simple_val_inference(
         pairs = [(g, p) for g, p in zip(all_true, all_pred) if p != "MISSING"]
         n_gold = len(all_true)
         n_answered = len(pairs)
+        n_applicable = sum(1 for g in all_true if _is_applicable_gold(g))
 
         answered_frac = n_answered / n_gold if n_gold > 0 else 0.0
 
@@ -937,6 +954,7 @@ def run_simple_val_inference(
 
         is_string_target = spec and spec.get("type") == "string"
         answers_partially_correct = []
+        acc_applicable = None
 
         if n_answered > 0:
             y_true = [g for g, _ in pairs]
@@ -970,13 +988,25 @@ def run_simple_val_inference(
                 )
             except Exception:
                 acc = prec = rec = f1 = 0.0
+
+            # Accuracy on the applicable subset only (gold != "not applicable").
+            app_keep = [_is_applicable_gold(g) for g in y_true]
+            if any(app_keep):
+                yt_app = [g for g, k in zip(y_true, app_keep) if k]
+                yp_app = [p for p, k in zip(y_pred_clean, app_keep) if k]
+                try:
+                    acc_applicable = accuracy_score(yt_app, yp_app)
+                except Exception:
+                    acc_applicable = None
         else:
             acc = prec = rec = f1 = 0.0
 
+        acc_app_str = f"{acc_applicable:8.3f}" if acc_applicable is not None else f"{'NA':>8s}"
         print(
             f"{t:25s} {n_gold:5d} "
             f"{acc:8.3f} {prec:8.3f} {rec:8.3f} {f1:8.3f} "
-            f"{answered_frac*100:10.1f} {in_label_frac*100:10.1f}"
+            f"{answered_frac*100:10.1f} {in_label_frac*100:10.1f} "
+            f"{n_applicable:6d} {acc_app_str}"
         )
 
         # Collect example-level answer statistics per target for CSV export
@@ -989,7 +1019,9 @@ def run_simple_val_inference(
                 "n_gold": n_gold,
                 "n_answered": n_answered,
                 "n_in_label": n_in_label,
+                "n_applicable": n_applicable,
                 "accuracy": acc,
+                "accuracy_applicable": acc_applicable,
                 "precision_macro": prec,
                 "recall_macro": rec,
                 "f1_macro": f1,
@@ -1011,7 +1043,9 @@ def run_simple_val_inference(
         "n_gold": N,
         "n_answered": None,
         "n_in_label": None,
+        "n_applicable": None,
         "accuracy": None,
+        "accuracy_applicable": None,
         "precision_macro": None,
         "recall_macro": None,
         "f1_macro": None,
