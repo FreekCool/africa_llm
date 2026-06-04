@@ -2,6 +2,7 @@ import sys
 print(sys.version)
 
 import os
+import re
 import json
 import torch
 import random
@@ -23,7 +24,9 @@ agent_utils.test_function()
 
 CACHE_DIR = '/projects/prjs1308/huggingface/'
 
-TOPIC01_ALLOWED = [
+# Codebook §12 topic labels (up to 3, ;-joined). "not applicable" is retained
+# even though §12 doesn't spell it out — gated rows can carry it (S4).
+TOPIC_ALLOWED = [
     "NO TOPIC",
     "ECONOMY",
     "CIVIL RIGHTS",
@@ -46,83 +49,53 @@ TOPIC01_ALLOWED = [
     "GOVERNMENT OPERATIONS",
     "PUBLIC LANDS",
     "CULTURE",
-    "ETHNICITY"
+    "ETHNICITY",
+    "not applicable",
 ]
 
-# Mapping from old topic numbers to new topic numbers (as strings)
-topic_mapping = {
-    0: 'NO TOPIC',
-    1: 'ECONOMY',
-    2: 'CIVIL RIGHTS',
-    3: 'HEALTH',
-    4: 'AGRICULTURE',
-    5: 'LABOR',
-    6: 'EDUCATION',
-    7: 'ENVIRONMENT',
-    8: 'ENERGY',
-    9: 'IMMIGRATION',
-    10: 'TRANSPORTATION',
-    12: 'LAW AND CRIME',  # Law and Crime
-    13: 'SOCIAL WELFARE',  # Social Welfare
-    14: 'HOUSING',  # Housing
-    15: 'DOMESTIC COMMERCE',  # Domestic Commerce
-    16: 'DEFENSE',  # Defense
-    17: 'TECHNOLOGY',  # Technology
-    18: 'FOREIGN TRADE',  # Foreign Trade
-    19: 'INTERNATIONAL AFFAIRS',  # International Affairs
-    20: 'GOVERNMENT OPERATIONS',  # Government Operations
-    21: 'PUBLIC LANDS',  # Public Lands
-    23: 'CULTURE',
-    24: 'ETHNICITY'   # Gun control
-} # TOPIC MAPPING TO BE APPLIED TO DATAFRAME
+# Labels + transcripts come from the 3jun CSV. It is the 1jun label set with the
+# three E3 string fixes applied and a `text` column merged in, so transcripts are
+# read straight from the CSV (verified: text matches african_videos.json on every
+# overlapping id). No json join, so the E1 id-cast-join failure can't occur.
+# CSV `id` is float64 (e.g. 1712829139429512.0) -> cast to int64 for a clean key.
+CSV_PATH = Path("/projects/prjs1308/africa_llm_data/AFRICA-TRAIN-DB-3jun2026.csv")
 
+df = pd.read_csv(CSV_PATH)
+df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("int64")
 
-json_path = Path("/projects/prjs1308/africa_llm_data/africa_jsons/african_videos.json")
+# Label columns = every column except the id key and the transcript text.
+label_cols = [c for c in df.columns if c not in ("id", "text")]
 
-with json_path.open("r", encoding="utf-8") as f:
-    records = json.load(f)
+# Keep only rows with a usable transcript; log how many are dropped.
+has_text = df["text"].notna() & (df["text"].astype(str).str.strip() != "")
+n_total = len(df)
+n_with_text = int(has_text.sum())
+print(f"[data] rows={n_total} with_text={n_with_text} dropped={n_total - n_with_text}")
+df = df.loc[has_text].reset_index(drop=True)
 
-print("N records:", len(records))
-print(records[0])
+# E4: "NOT CODED" in national_unity_narrow is the annotators' "never coded this field"
+# sentinel (~1589 rows), not a real label. Blank it to null so the field is excluded
+# from the training target and from metrics; the row itself is kept. (Resolved Q6.)
+not_coded = df["national_unity_narrow"].astype(str).str.strip() == "NOT CODED"
+print(f"[data] national_unity_narrow NOT CODED -> null: {int(not_coded.sum())} rows")
+df.loc[not_coded, "national_unity_narrow"] = None
 
-df = pd.json_normalize(records)
+# Build targets_json directly from the label columns. Values are already the
+# codebook label-name strings (e.g. topic = "TRANSPORTATION"), so no topic_mapping
+# or numeric recode is applied.
+df["targets_json"] = df[label_cols].apply(
+    lambda row: json.dumps(
+        {c: (None if pd.isna(row[c]) else row[c]) for c in label_cols},
+        ensure_ascii=False,
+    ),
+    axis=1,
+)
 
-# (keep your list/dict -> json-string cleanup if you want)
-for col in df.columns:
-    if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
-        df[col] = df[col].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x)
-
-# 1) define target cols: everything right of 'text'
-text_idx = df.columns.get_loc("text")
-target_cols = list(df.columns[text_idx + 1:])
-
-# 2) drop rows where ALL targets are NaN (before split)
-mask_all_nan = df[target_cols].isna().all(axis=1)
-print("Dropping rows with all targets NaN:", int(mask_all_nan.sum()), "/", len(df))
-df = df.loc[~mask_all_nan].reset_index(drop=True)
-
-df["topic01"] = pd.to_numeric(df["topic01"], errors="coerce").astype("Int64").map(topic_mapping)
-
-# 3) split
+# split
 train_df, test_df = train_test_split(df, test_size=0.2, random_state=1, shuffle=True)
-
-# 4) add targets_json to both (same target_cols list)
-def add_targets_json(df_):
-    df_["targets_json"] = df_.apply(
-        lambda row: json.dumps(
-            {c: (None if pd.isna(row[c]) else row[c]) for c in target_cols},
-            ensure_ascii=False,
-        ),
-        axis=1,
-    )
-
-add_targets_json(train_df)
-add_targets_json(test_df)
 
 print(train_df[["text", "targets_json"]].head(2).to_string(index=False))
 print(test_df[["text", "targets_json"]].head(2).to_string(index=False))
-
-print(train_df.head())
 
 # System prompt = codebook (long, static → KV-cached at inference). User prompt = short template from file.
 # utf-8-sig strips a leading BOM (U+FEFF) so it doesn't become an extra token and affect model behavior.
@@ -147,34 +120,30 @@ else:
     print("Using single prompt (no system_prompt file found).")
     print("Length:", len(prompt))
 
+# Codebook label-name target spec (2004 codebook), ordered §1–§27. Every `allowed`
+# set is the codebook's label-name list, data-verified against the 3jun CSV:
+# 26/27 categorical fields match exactly; the only out-of-codebook values are
+# language's free-form Other(<lang>), accepted via `allow_other_paren` (D2).
+# `multi_value` fields are `;`-joined and scored as order-insensitive sets (D1).
+# Conditional fields are multiclass (they carry "not applicable"/"unclear"), not binary.
 TARGETS = {
-    # multiclass
-    "language": {"type": "multiclass", "allowed": [1,2,3,4,5,6,7,8,99]},
-    "resource_distribution_by_whom1": {"type": "multiclass", "allowed": [3,2,1,0,-1,99]},
-    "resource_distribution_for_whom1": {"type": "multiclass", "allowed": [1,0,-1,99]},
-    "climate_change": {"type": "multiclass", "allowed": [0,1,2,99]},
-    "topic01": {"type": "multiclass", "allowed": TOPIC01_ALLOWED},
-    "pro_us": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_russia": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_china": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_un": {"type": "multiclass", "allowed": [1,2,3,99]},
-    "pro_imf": {"type": "multiclass", "allowed": [1,2,3,99]},  # (or pro_mf if that's your column)
-    "pro_democracy": {"type": "multiclass", "allowed": [1,2,3,99]},
-
-    # binary (optionally allow 99 if your data uses it)
-    "politics": {"type": "binary", "allowed": [0,1,99]},
-    "domestic_politics": {"type": "binary", "allowed": [0,1,99]},
-    "foreign_politics": {"type": "binary", "allowed": [0,1,99]},
-    "resource_distribution": {"type": "binary", "allowed": [0,1,99]},
-    "resource_distribution_for_gender": {"type": "binary", "allowed": [0,1,99]},
-    "anti_western": {"type": "binary", "allowed": [0,1,99]},
-    "national_unity": {"type": "binary", "allowed": [0,1,99]},
-    "subgroup_unity": {"type": "binary", "allowed": [0,1,99]},
-    "african_unity": {"type": "binary", "allowed": [0,1,99]},
-    "political_opponents": {"type": "binary", "allowed": [0,1,99]},
-    "religion": {"type": "binary", "allowed": [0,1,99]},
-
-    # string fields (allowed filled from train+test+val in next cell)
+    "language": {"type": "multiclass", "multi_value": True, "allow_other_paren": True, "allowed": [
+        "English", "French", "Arabic", "Portuguese", "Swahili", "Hausa", "Yoruba",
+        "Other", "Unclear"]},
+    "politics": {"type": "multiclass", "allowed": [
+        "politics", "not political", "unclear"]},
+    "domestic_politics": {"type": "multiclass", "allowed": [
+        "domestic politics", "not domestic politics", "unclear", "not applicable"]},
+    "foreign_politics": {"type": "multiclass", "allowed": [
+        "foreign politics", "not foreign politics", "unclear", "not applicable"]},
+    "resource_distribution": {"type": "multiclass", "allowed": [
+        "resource distribution", "not resource distribution", "unclear", "not applicable"]},
+    "resource_distribution_by_whom1": {"type": "multiclass", "multi_value": True, "allowed": [
+        "other state", "international organisation", "national government", "other",
+        "not specified", "unclear", "not applicable"]},
+    "resource_distribution_for_whom1": {"type": "multiclass", "multi_value": True, "allowed": [
+        "specific locality or group", "country-wide", "not specified", "unclear",
+        "not applicable"]},
     "resource_distribution_for_whom_ethnic1": {
         "type": "string",
         "allowed": [],
@@ -197,6 +166,38 @@ TARGETS = {
             "max_unique_incorrect": 200,
         },
     },
+    "resource_distribution_gender": {"type": "multiclass", "allowed": [
+        "resources for women", "resources not specifically for women", "unclear",
+        "not applicable"]},
+    "climate_change": {"type": "multiclass", "allowed": [
+        "mentions climate change", "mentions sustainability", "unclear", "not applicable"]},
+    "topic": {"type": "multiclass", "multi_value": True, "allowed": TOPIC_ALLOWED},
+    "pro_us": {"type": "multiclass", "allowed": [
+        "positive towards the US", "neutral towards the US", "negative towards the US",
+        "unclear", "no mention of the US", "not applicable"]},
+    "pro_russia": {"type": "multiclass", "allowed": [
+        "positive towards Russia", "neutral towards Russia", "negative towards Russia",
+        "unclear", "no mention of Russia", "not applicable"]},
+    "pro_china": {"type": "multiclass", "allowed": [
+        "positive towards China", "neutral towards China", "negative towards China",
+        "unclear", "no mention of China", "not applicable"]},
+    "pro_un": {"type": "multiclass", "allowed": [
+        "positive towards the UN", "neutral towards the UN", "negative towards the UN",
+        "unclear", "no mention of the UN", "not applicable"]},
+    "pro_imf": {"type": "multiclass", "allowed": [
+        "positive towards the IMF", "neutral towards the IMF", "negative towards the IMF",
+        "unclear", "no mention of the IMF", "not applicable"]},
+    "pro_democracy": {"type": "multiclass", "allowed": [
+        "positive towards democracy", "neutral towards democracy", "negative towards democracy",
+        "unclear", "no mention of democracy", "not applicable"]},
+    "anti_western": {"type": "multiclass", "allowed": [
+        "anti-western", "not anti-western", "unclear", "not applicable"]},
+    "national_unity": {"type": "multiclass", "allowed": [
+        "national unity", "no mention of the nation or national unity", "unclear"]},
+    "national_unity_narrow": {"type": "multiclass", "allowed": [
+        "patriotism", "not specifically patriotic", "unclear"]},  # NOT CODED → null (E4)
+    "subgroup_unity": {"type": "multiclass", "allowed": [
+        "subgroup unity", "no mention of specific subgroup", "unclear"]},
     "subgroup_unity_text": {
         "type": "string",
         "allowed": [],
@@ -208,6 +209,15 @@ TARGETS = {
             "max_unique_incorrect": 500,
         },
     },
+    "african_unity": {"type": "multiclass", "allowed": [
+        "african unity", "no mention of africa", "unclear"]},
+    "political_opponents": {"type": "multiclass", "allowed": [
+        "mentions political opponents", "no mention of political opponents", "unclear",
+        "not applicable"]},
+    "political_opponents_viol": {"type": "multiclass", "allowed": [
+        "mentions violent group", "no mention of violent group", "unclear", "not applicable"]},
+    "religion": {"type": "multiclass", "allowed": [
+        "religious", "no mention of religion", "unclear"]},
 }
 
 # Set string targets' allowed list from all annotated values in train + test (val is a subset of train)
@@ -227,6 +237,48 @@ for t in STRING_TARGETS:
     unique_vals = sorted(vals.unique().tolist())
     TARGETS[t]["allowed"] = unique_vals
     print(f"{t}: allowed = {len(unique_vals)} values")
+
+# Codebook-conformance guard (T4): TARGETS keys must match the CSV label columns
+# 1-for-1, and every non-string field's `;`-split atomic values must be a subset of
+# its `allowed` set. The only exemption is language's free-form Other(<lang>)
+# (allow_other_paren / D2). national_unity_narrow's "NOT CODED" is already nulled by
+# E4, so it never reaches here. If this fails, fix the data at source — do not patch
+# in code (hard rule: no workarounds). This is the loud-failure guard for a CSV swap.
+_OTHER_PAREN_RE = re.compile(r"^Other\(.*\)$")
+
+target_keys, csv_keys = set(TARGETS.keys()), set(label_cols)
+if target_keys != csv_keys:
+    raise ValueError(
+        "TARGETS keys != CSV label columns.\n"
+        f"  only in TARGETS: {sorted(target_keys - csv_keys)}\n"
+        f"  only in CSV:     {sorted(csv_keys - target_keys)}"
+    )
+
+violations = {}
+for col, spec in TARGETS.items():
+    if spec.get("type") == "string":
+        continue
+    allowed_set = {str(a).strip() for a in spec["allowed"]}
+    allow_other = spec.get("allow_other_paren", False)
+    bad = {}
+    for cell in df[col].dropna().astype(str):
+        for atom in cell.split(";"):
+            atom = atom.strip()
+            if not atom or atom in allowed_set:
+                continue
+            if allow_other and _OTHER_PAREN_RE.match(atom):
+                continue
+            bad[atom] = bad.get(atom, 0) + 1
+    if bad:
+        violations[col] = dict(sorted(bad.items()))
+if violations:
+    raise ValueError(
+        "Out-of-codebook values found (fix the data at source, not in code):\n"
+        + "\n".join(f"  {c}: {b}" for c, b in violations.items())
+    )
+n_checked = sum(1 for s in TARGETS.values() if s.get("type") != "string")
+print(f"[conformance] OK — {n_checked} categorical fields ⊆ codebook label sets; "
+      f"TARGETS keys == CSV columns ({len(target_keys)})")
 
 seeds = [42]
 results_dir = '/projects/prjs1308/africa_llm_data/results/testing'
@@ -259,6 +311,6 @@ train_validate(
     epochs=epochs,
     learning_rates=[0.0001],
     gemma_model=gemma_model,    # "4b" | "27b"
-    targets_spec=TARGETS,      # for inference: normalize semicolon-separated multiclass (e.g. topic01)
+    targets_spec=TARGETS,      # for inference: in-label / set scoring of semicolon-separated multiclass (e.g. topic)
     system_prompt=system_prompt,  # codebook in system role → KV prefix caching at inference
 )
