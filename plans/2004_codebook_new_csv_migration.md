@@ -305,6 +305,28 @@ accuracy is inflated by trivially predicting N/A.)
 
 ---
 
+## 7.5 Scientific review + hardening (2026-06-04)
+
+An independent methodology review found three issues beyond the migration scope:
+
+- **B1 (was experiment-voiding) — FIXED.** The codebook system prompt (~5–8k tokens)
+  exceeded `max_tokens=4096`, so the transcript budget was 0 → every training transcript
+  was empty and the answer JSON was right-truncated. **Rule: never truncate the codebook,
+  only the transcript.** `_truncate_transcript()` now caps the transcript at
+  `max_text_tokens` (default **500**) and **raises** if the codebook+answer can't fit
+  `max_seq_length`; both jobs set `max_tokens=12288`. Train and inference cap text
+  identically. (~18% of transcripts exceed 500 tok → raise `max_text_tokens` to keep more.)
+- **B2 — accepted as-is.** 4 duplicate transcripts (some cross-`id`) land in both train and
+  test under the random split. **Decision: keep all 2300 rows** (D3). Report test metrics
+  with the caveat that those 4 are mildly inflated.
+- **B3 — FIXED.** Removed the `train_df[:30]`/`test_df[:10]` debug slice in
+  `gemma3_finetune.py`; real runs use the full data.
+
+Non-blocking (left for judgement): severe class imbalance on several fields (report
+**macro-F1 / per-class recall**, not accuracy); sawtooth LR from the per-epoch
+`trainer.train()` loop; codebook example-JSON key order ≠ gold order (harmless, eval is
+order-insensitive).
+
 ## 7. Done this session (for reference)
 
 - T1: §26 typo fixed; example JSON confirmed label-name (27/27 keys).
