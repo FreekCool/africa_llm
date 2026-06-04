@@ -20,6 +20,7 @@ with a merged checkpoint and vLLM (pip install vllm).
 
 import os
 import gc
+import re
 import time
 import json
 import datetime
@@ -608,6 +609,26 @@ def _string_partial_match(gold, pred) -> bool:
     return bool(g_words & p_words)
 
 
+# Multi-value (`;`-joined) scoring (D1) + language Other(<lang>) acceptance (D2).
+# A target marked ``multi_value`` in targets_spec is scored as an order-insensitive
+# set; ``allow_other_paren`` accepts free-form ``Other(...)`` atoms as in-label.
+_OTHER_PAREN_RE = re.compile(r"^Other\(.*\)$")
+
+
+def _split_atoms(v) -> list:
+    """Split a (possibly ;-joined) label value into stripped, non-empty atoms."""
+    return [a.strip() for a in str(v).split(";") if a.strip()]
+
+
+def _canon_multi(v) -> str:
+    """Canonical (sorted) form of a ;-joined label so ordering can't mis-score."""
+    return ";".join(sorted(_split_atoms(v)))
+
+
+def _atom_in_scope(atom: str, allowed_set: set, allow_other: bool) -> bool:
+    return atom in allowed_set or (allow_other and _OTHER_PAREN_RE.match(atom) is not None)
+
+
 # Sentinel for model predictions that are null (JSON "null"). Used so sklearn
 # metrics get no None values (which raise) and null preds count as wrong.
 _PRED_NULL_SENTINEL = "__NULL_PRED__"
@@ -942,10 +963,16 @@ def run_simple_val_inference(
         gold_label_set = set(all_true)
         spec = (targets_spec or {}).get(t) if targets_spec else None
         allowed = spec.get("allowed") if spec and isinstance(spec, dict) else None
+        is_multi_value = bool(spec.get("multi_value")) if spec else False
+        allow_other = bool(spec.get("allow_other_paren")) if spec else False
         if allowed is not None:
             allowed_set = {str(a).strip() for a in allowed}
             def _in_scope(p):
-                return str(p).strip() in allowed_set
+                # Multi-value: every ;-split atom must be a valid codebook label.
+                atoms = _split_atoms(p) if is_multi_value else [str(p).strip()]
+                return bool(atoms) and all(
+                    _atom_in_scope(a, allowed_set, allow_other) for a in atoms
+                )
         else:
             def _in_scope(p):
                 return p in gold_label_set
@@ -981,10 +1008,21 @@ def run_simple_val_inference(
             y_pred_clean = [
                 _PRED_NULL_SENTINEL if p is None else p for p in y_pred
             ]
+            # Order-insensitive comparison for ;-joined multi-value targets (D1):
+            # canonicalize gold and pred to sorted atoms so "a;b" == "b;a".
+            if is_multi_value:
+                y_true_cmp = [_canon_multi(g) for g in y_true]
+                y_pred_cmp = [
+                    p if p == _PRED_NULL_SENTINEL else _canon_multi(p)
+                    for p in y_pred_clean
+                ]
+            else:
+                y_true_cmp = y_true
+                y_pred_cmp = y_pred_clean
             try:
-                acc = accuracy_score(y_true, y_pred_clean)
+                acc = accuracy_score(y_true_cmp, y_pred_cmp)
                 prec, rec, f1, _ = precision_recall_fscore_support(
-                    y_true, y_pred_clean, average="macro", zero_division=0
+                    y_true_cmp, y_pred_cmp, average="macro", zero_division=0
                 )
             except Exception:
                 acc = prec = rec = f1 = 0.0
@@ -992,8 +1030,8 @@ def run_simple_val_inference(
             # Accuracy on the applicable subset only (gold != "not applicable").
             app_keep = [_is_applicable_gold(g) for g in y_true]
             if any(app_keep):
-                yt_app = [g for g, k in zip(y_true, app_keep) if k]
-                yp_app = [p for p, k in zip(y_pred_clean, app_keep) if k]
+                yt_app = [g for g, k in zip(y_true_cmp, app_keep) if k]
+                yp_app = [p for p, k in zip(y_pred_cmp, app_keep) if k]
                 try:
                     acc_applicable = accuracy_score(yt_app, yp_app)
                 except Exception:
