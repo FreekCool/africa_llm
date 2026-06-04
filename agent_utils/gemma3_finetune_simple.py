@@ -32,12 +32,11 @@ from collections import defaultdict
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 from transformers import (
     AutoTokenizer,
     AutoProcessor,
     AutoModelForCausalLM,
-    TrainingArguments,
     BitsAndBytesConfig,
 )
 from peft import (
@@ -1390,7 +1389,9 @@ def run_simple_gemma3(
                 trainer_output_dir = tempfile.mkdtemp(prefix="africa_llm_simple_")
                 model_save_dir = None
             have_eval = len(val_dataset) > 0
-            training_args = TrainingArguments(
+            # TRL 0.18: SFT-specific fields (dataset_text_field / max_seq_length / packing)
+            # live on SFTConfig, not on SFTTrainer; SFTConfig subclasses TrainingArguments.
+            training_args = SFTConfig(
                 output_dir=trainer_output_dir,
                 num_train_epochs=1,
                 per_device_train_batch_size=batch_size,
@@ -1412,6 +1413,9 @@ def run_simple_gemma3(
                 lr_scheduler_type="linear",
                 report_to="tensorboard",
                 seed=train_val_seed,
+                dataset_text_field="text",
+                max_seq_length=max_tokens,
+                packing=False,
             )
 
             # ── 4) Trainer ────────────────────────────────────────────
@@ -1419,11 +1423,8 @@ def run_simple_gemma3(
                 model=model,
                 train_dataset=dataset,
                 eval_dataset=val_dataset if have_eval else None,
-                dataset_text_field="text",
-                max_seq_length=max_tokens,
-                tokenizer=tokenizer,
+                processing_class=tokenizer,
                 args=training_args,
-                packing=False,
             )
 
             print(f"Trainer ready  |  train bs={trainer.args.per_device_train_batch_size}  "
