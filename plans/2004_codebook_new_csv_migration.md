@@ -29,12 +29,12 @@ refer to it).
 | **D1/D2 — set scoring** | ✅ **Done** | `run_simple_val_inference` scores `multi_value` fields as order-insensitive sets (`"a;b"==​"b;a"`) for accuracy + applicable-subset accuracy, and accepts `Other(*)` as in_label via `allow_other_paren`. Unit-tested: order-swap 0.667 (set) vs 0.333 (old exact). |
 | **T6 — Shared helper + fulltrain** | ✅ **Done** | `agent_utils/africa_dataprep.py: load_3jun_training_df()` holds all data-prep + TARGETS + conformance. Both jobs call it (fulltrain dropped the old json + numeric `topic_mapping`), so their data-prep is diff-empty. |
 | **T7 — Local dry-run** | ✅ **Done** | Helper run on local 3jun sample: 2300 rows / 0 dropped, 27-key label-name `targets_json`, 0 numeric / 0 `NOT CODED`, E4 nulls=1589, conformance OK, string allowed 8/351/385. (The training-time `[SYSTEM]`/`[ASSISTANT]` print needs the model → Snellius runtime.) |
-| **T8 — Harden + deploy** | 🟡 **Code done; deploy pending** | Missing-system-prompt branch in both jobs now raises `FileNotFoundError` instead of silently loading the numeric `africa_prompt_2602.txt`. **Remaining (manual, Snellius): P2 deploy** — copy `africa_prompt_2004.txt` → `prompts/africa_prompt_system.txt` and place the 3jun CSV at `CSV_PATH`, then launch under Screen on a GPU node. |
+| **T8 — Harden + deploy** | 🟡 **Code done; deploy pending** | Missing-codebook branch in both jobs now raises `FileNotFoundError` instead of silently loading the numeric `africa_prompt_2602.txt`. Jobs read `prompts/africa_prompt_2004.txt` directly. **Remaining (manual, Snellius): P2 deploy** — place `africa_prompt_2004.txt` in `prompts/` and the 3jun CSV at `CSV_PATH`, then launch under Screen on a GPU node. |
 
 **Current state:** all code is migrated and locally validated (T3, T4, T5, D1/D2, T6, T7
 done; T8 foot-gun done). The data-prep + `TARGETS` + scoring are end-to-end correct on the
-3jun CSV. The **only** remaining step is the manual Snellius deploy (P2: place the
-label-name codebook at `prompts/africa_prompt_system.txt` and the 3jun CSV at `CSV_PATH`),
+3jun CSV. The **only** remaining step is the manual Snellius deploy (P2: place
+`africa_prompt_2004.txt` in `prompts/` and the 3jun CSV at `CSV_PATH`),
 then launch — the job now fails loudly if that codebook is missing.
 
 ---
@@ -49,25 +49,25 @@ label-name gold).
 Two mechanics the rest of the plan assumes but never spelled out:
 
 1. **The script never reads `codebooks/` directly.** It reads the system prompt from
-   `PROMPTS_DIR/africa_prompt_system.txt` and the data from `CSV_PATH` — both currently
-   Snellius paths (`gemma3_finetune.py:57,93`). So *"use codebook 2004"* literally means
-   **deploy `africa_prompt_2004.txt` → `prompts/africa_prompt_system.txt`**; the local
-   filename is irrelevant to the running job.
+   `PROMPTS_DIR/africa_prompt_2004.txt` and the data from `CSV_PATH` — both Snellius
+   paths. So *"use codebook 2004"* literally means **place `africa_prompt_2004.txt` in
+   `prompts/`** (the jobs now read that filename directly — no rename to
+   `africa_prompt_system.txt`).
 2. **Codebook format must match the data format** (label-name ↔ label-name), including the
    codebook's example output JSON.
 
 | # | Prerequisite | Where | By |
 |---|---|---|---|
 | P1 | `CSV_PATH` resolves to the 3jun file | `gemma3_finetune.py:57` (Snellius) / override to `data_examples/...` for local | T2 ✅ (Snellius) |
-| P2 | `africa_prompt_2004.txt` deployed to `prompts/africa_prompt_system.txt` | Snellius | **T8** |
+| P2 | `africa_prompt_2004.txt` present in `prompts/` (jobs read it directly) | Snellius | **T8** |
 | P3 | Deployed codebook's example JSON uses label-name keys/values | codebook | T1 ✅ |
 | P4 | User-prompt template present, or rely on the built-in `{}` fallback | `prompts/inference_prompt.txt` (optional) | OK as-is |
 | P5 | `targets_json` has no `NOT CODED`; `TARGETS` is label-name | code | **T3 + T4** |
 
 - **"Executes" needs P1.** "Correct experiment" needs P2 + P3 + P5 (and the right codebook).
-- **Numeric-fallback foot-gun (fix in T8 area):** if `africa_prompt_system.txt` is absent,
-  the `else` branch (`gemma3_finetune.py:104-108`) silently loads the **numeric**
-  `africa_prompt_2602.txt` as a single prompt. On Snellius this can silently revert the
+- **Numeric-fallback foot-gun (FIXED in T8):** previously, if the system prompt was absent
+  the `else` branch silently loaded the **numeric** `africa_prompt_2602.txt`. It now raises
+  `FileNotFoundError`. (Original concern, for context:) on Snellius this could silently revert the
   migration; locally it crashes (file absent). Harden this: fail loudly if the expected
   label-name system prompt is missing rather than falling back to a numeric codebook.
 - **Local dry-run reality (T7):** the full job needs a GPU + model + the Snellius prompt
@@ -257,8 +257,8 @@ accuracy is inflated by trivially predicting N/A.)
       8/351/385. (The `[SYSTEM]`/`[ASSISTANT]` train-print needs the model → Snellius.)
 - [x] **T8 (foot-gun) — done.** Missing-system-prompt branch in both jobs now raises
       `FileNotFoundError` instead of silently loading the numeric `africa_prompt_2602.txt`.
-- [ ] **T8 (deploy, manual on Snellius).** Copy `africa_prompt_2004.txt` →
-      `/projects/prjs1308/africa_llm_data/prompts/africa_prompt_system.txt` AND place
+- [ ] **T8 (deploy, manual on Snellius).** Place `africa_prompt_2004.txt` in
+      `/projects/prjs1308/africa_llm_data/prompts/` (jobs read it directly) AND place
       `AFRICA-TRAIN-DB-3jun2026.csv` at the `CSV_PATH`
       (`/projects/prjs1308/africa_llm_data/`). Launch under GNU Screen on a GPU node with
       the `vve_nxt` env.
@@ -300,7 +300,7 @@ accuracy is inflated by trivially predicting N/A.)
 | `agent_utils/africa_dataprep.py` *(new, T6)* | shared `load_3jun_training_df()` |
 | `agent_utils/gemma3_finetune_simple.py` | T5: `accuracy_applicable`/`n_applicable` (+ commit `NOT CODED` skip) |
 | `agent_utils/utils.py` | verify-only: `_EVAL_KEY_ALIASES` (likely no change) |
-| Snellius `prompts/africa_prompt_system.txt` | T8: deploy corrected codebook |
+| Snellius `prompts/africa_prompt_2004.txt` | T8: deploy corrected codebook (jobs read this filename) |
 | Snellius `AFRICA-TRAIN-DB-3jun2026.csv` | T8: deploy at `CSV_PATH` |
 
 ---

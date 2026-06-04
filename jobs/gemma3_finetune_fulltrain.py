@@ -33,7 +33,7 @@ print("Train rows:", len(train_df))
 print("Test rows:", len(test_df))
 
 PROMPTS_DIR = Path("/projects/prjs1308/africa_llm_data/prompts")
-system_prompt_path = PROMPTS_DIR / "africa_prompt_system.txt"
+system_prompt_path = PROMPTS_DIR / "africa_prompt_2004.txt"
 inference_prompt_path = PROMPTS_DIR / "inference_prompt.txt"
 if system_prompt_path.exists():
     system_prompt = system_prompt_path.read_text(encoding="utf-8-sig").strip()
