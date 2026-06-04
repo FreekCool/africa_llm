@@ -62,7 +62,11 @@ seeds = [42]
 results_dir = '/projects/prjs1308/africa_llm_data/results/testing'
 model_dir = '/projects/prjs1308/africa_llm_data/results/job_models'
 batch_size = 1
-max_tokens = 4096
+# Must hold the FULL codebook (never truncated) + capped transcript + answer. The
+# codebook system prompt is ~5–8k tokens; 12288 leaves headroom on an H100. The job
+# raises if the codebook+answer ever wouldn't fit (it is never silently truncated).
+max_tokens = 12288
+max_text_tokens = 500   # cap the TRANSCRIPT only at this many tokens (codebook is never capped)
 early_stopping = 5
 epochs = 5
 gemma_model = "4b"  # "4b" | "27b" for simple_gemma3
@@ -91,4 +95,5 @@ train_validate(
     gemma_model=gemma_model,    # "4b" | "27b"
     targets_spec=TARGETS,      # for inference: in-label / set scoring of semicolon-separated multiclass (e.g. topic)
     system_prompt=system_prompt,  # codebook in system role → KV prefix caching at inference
+    max_text_tokens=max_text_tokens,  # transcript cap (codebook never truncated)
 )

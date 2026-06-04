@@ -408,6 +408,38 @@ def _clone_past_kv(past_kv):
     return copy.deepcopy(past_kv)
 
 
+def _truncate_transcript(
+    tokenizer,
+    prompt_template: str,
+    raw_text,
+    answer_str: str,
+    system_prompt: str,
+    max_seq_length: int,
+    max_text_tokens: int,
+    safety_margin: int = 48,
+) -> str:
+    """Cap the TRANSCRIPT only — the codebook system prompt is never truncated.
+
+    Overhead = system prompt (codebook) + user template + answer + chat wrappers with an
+    empty transcript. If that alone doesn't fit ``max_seq_length`` the codebook would have
+    to be cut, so we raise instead (increase ``max_tokens``). Otherwise the transcript is
+    capped at ``max_text_tokens`` (and never beyond the room left after codebook+answer),
+    so the same cap is applied identically at train and inference time.
+    """
+    instruction_empty = insert_text_once(prompt_template, "")
+    full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str, system_prompt=system_prompt)
+    overhead = _token_len(full_empty, tokenizer)
+    if overhead + safety_margin > max_seq_length:
+        raise ValueError(
+            f"max_seq_length={max_seq_length} too small: codebook+answer overhead is "
+            f"{overhead} tokens (+{safety_margin} margin) with zero transcript. Increase "
+            "max_tokens — the codebook must never be truncated; only the transcript is capped."
+        )
+    budget = min(max_text_tokens, max_seq_length - overhead - safety_margin)
+    tokens = tokenizer.tokenize(str(raw_text))[:budget]
+    return tokenizer.convert_tokens_to_string(tokens)
+
+
 def build_simple_sft_dataset(
     df,
     tokenizer,
@@ -416,19 +448,19 @@ def build_simple_sft_dataset(
     answer_col: str,
     max_seq_length: int = 4096,
     system_prompt: str = None,
+    max_text_tokens: int = 500,
 ) -> Dataset:
     """
     Build a HuggingFace Dataset with a single ``text`` column containing
     chat-formatted SFT strings: user prompt (with transcript) + assistant
     answer (the raw JSON string).
 
-    Transcript is truncated dynamically so the full string fits in
-    ``max_seq_length``.  No slot tokens, no special processing.
+    Only the transcript is capped (at ``max_text_tokens``); the codebook system
+    prompt is never truncated.  No slot tokens, no special processing.
     """
     texts = []
     instructions = []
     answers = []
-    safety_margin = 48
 
     for _, row in df.iterrows():
         raw_text = row[text_col]
@@ -439,30 +471,12 @@ def build_simple_sft_dataset(
             continue
         answer_str = str(answer)
 
-        # Measure fixed overhead (prompt + chat wrappers + answer, no transcript)
-        instruction_empty = insert_text_once(prompt_template, "")
-        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str, system_prompt=system_prompt)
-        overhead = _token_len(full_empty, tokenizer)
-
-        transcript_budget = max(max_seq_length - overhead - safety_margin, 0)
-
-        # Truncate transcript to budget
-        all_tokens = tokenizer.tokenize(str(raw_text))
-        trunc_tokens = all_tokens[:transcript_budget]
-        trunc_text = tokenizer.convert_tokens_to_string(trunc_tokens)
-
-        # Build final string
+        trunc_text = _truncate_transcript(
+            tokenizer, prompt_template, raw_text, answer_str,
+            system_prompt, max_seq_length, max_text_tokens,
+        )
         instruction = insert_text_once(prompt_template, trunc_text)
         full_text = _build_chat_text_simple(tokenizer, instruction, answer_str, system_prompt=system_prompt)
-
-        # Safety check
-        final_len = _token_len(full_text, tokenizer)
-        if final_len > max_seq_length and len(trunc_tokens) > 0:
-            overshoot = final_len - max_seq_length + 32
-            trunc_tokens = trunc_tokens[:-overshoot] if overshoot < len(trunc_tokens) else []
-            trunc_text = tokenizer.convert_tokens_to_string(trunc_tokens)
-            instruction = insert_text_once(prompt_template, trunc_text)
-            full_text = _build_chat_text_simple(tokenizer, instruction, answer_str, system_prompt=system_prompt)
 
         texts.append(full_text)
         instructions.append(instruction)
@@ -495,15 +509,15 @@ def build_simple_val_prompts(
     answer_col: str,
     max_seq_length: int = 4096,
     system_prompt: str = None,
+    max_text_tokens: int = 500,
 ):
     """
     Build validation prompts (user turn only, with transcript) and gold answers.
-    Same truncation logic as build_simple_sft_dataset so prompts match training.
+    Same transcript cap as build_simple_sft_dataset so prompts match training.
     Returns (val_prompts, val_gold_raw) for inference.
     """
     prompts = []
     gold_raw = []
-    safety_margin = 48
 
     for _, row in df.iterrows():
         raw_text = row[text_col]
@@ -514,14 +528,10 @@ def build_simple_val_prompts(
             continue
         answer_str = str(answer)
 
-        instruction_empty = insert_text_once(prompt_template, "")
-        full_empty = _build_chat_text_simple(tokenizer, instruction_empty, answer_str, system_prompt=system_prompt)
-        overhead = _token_len(full_empty, tokenizer)
-        transcript_budget = max(max_seq_length - overhead - safety_margin, 0)
-
-        all_tokens = tokenizer.tokenize(str(raw_text))
-        trunc_tokens = all_tokens[:transcript_budget]
-        trunc_text = tokenizer.convert_tokens_to_string(trunc_tokens)
+        trunc_text = _truncate_transcript(
+            tokenizer, prompt_template, raw_text, answer_str,
+            system_prompt, max_seq_length, max_text_tokens,
+        )
         instruction = insert_text_once(prompt_template, trunc_text)
 
         # Prompt only (user turn + generation prompt), no assistant answer
@@ -1154,6 +1164,7 @@ def run_simple_gemma3(
     system_prompt: str = None,
     inference_batch_size: int = 1,
     stop_on_complete_json: bool = True,
+    max_text_tokens: int = 500,
 ):
     """
     Simple multi-target JSON fine-tuning for Gemma-3.
@@ -1247,6 +1258,7 @@ def run_simple_gemma3(
         answer_col=answer_col,
         max_seq_length=max_tokens,
         system_prompt=system_prompt,
+        max_text_tokens=max_text_tokens,
     )
     print(f"[simple-sft] Built {len(test_prompts)} TEST prompts for inference")
 
@@ -1290,6 +1302,7 @@ def run_simple_gemma3(
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
                 system_prompt=system_prompt,
+                max_text_tokens=max_text_tokens,
             )
 
             val_dataset = build_simple_sft_dataset(
@@ -1300,9 +1313,10 @@ def run_simple_gemma3(
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
                 system_prompt=system_prompt,
+                max_text_tokens=max_text_tokens,
             )
 
-            # Validation prompts for inference (same truncation as train)
+            # Validation prompts for inference (same transcript cap as train)
             val_prompts, val_gold_raw = build_simple_val_prompts(
                 df=val_rows,
                 tokenizer=tokenizer,
@@ -1311,6 +1325,7 @@ def run_simple_gemma3(
                 answer_col=answer_col,
                 max_seq_length=max_tokens,
                 system_prompt=system_prompt,
+                max_text_tokens=max_text_tokens,
             )
             print(f"[simple-sft] Built {len(val_prompts)} validation prompts for inference")
 
