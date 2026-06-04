@@ -1,0 +1,264 @@
+﻿This is the codebook for the coding task at hand.
+________________________________________________________________________
+1. language
+Code what language the post is in. 
+
+
+1 English 
+2 French 
+3 Arabic 
+4 Portuguese
+5 Swahili 
+6 Hausa 
+7 Yoruba 
+8 Other
+        If other, code 8(language) or leave blank and code unclear 
+99 Unclear 
+________________________________________________________________________
+2. politics
+
+
+Binary variable: either 0 or 1, where 1 indicates that the post is about politically relevant content. 
+
+
+Use the following guidelines when deciding whether the post is about politics:
+A post should be considered as politically relevant (so be coded as  1) if:
+It’s about any political issue, (potentially) politically relevant topics (including conspiracy theories) are being discussed, such as science, immigration, civil liberties, labor, law & crime, international affairs, education, healthcare, housing, etc.
+It’s about a politically relevant (or historical) event/s, political actor/s
+It is about development issues, infrastructure or the distribution of resources 
+0 otherwise (not politically relevant)
+Unpolitical are posts about the person’s family, hobbies, and similar unless they are discussed in a political context, eg if the president takes place in a run to promote health policies then this is political
+Posts about the beauty of the country are only unpolitical if they contain no reference to specific localities/regions or issues, eg it is political if it discusses wildlife preservation or that one locality/region in particular is beautiful 
+Code as 99 if unclear 
+
+
+Note1: Please code politics inclusively, as soon as a political issue is mentioned even in passing. 
+________________________________________________________________________
+3. domestic_politics
+ONLY CODE IF Politics == 1 (leave blank otherwise):
+Code as 1 if 
+Post is about domestic politics or domestic resource distribution 
+0 otherwise
+
+
+Note1: Please code domestic politics inclusively, as soon as a domestic political issue is mentioned even in passing. 
+________________________________________________________________________
+4. foreign_politics
+ONLY CODE IF Politics == 1 (leave blank otherwise):
+Code as 1 if 
+Post is about foreign politics 
+Mentions foreign affairs topics
+Mentions foreign leaders or state visits
+0 otherwise
+
+
+Note: Posts can be both about foreign and domestic politics, eg a post that mentions a cooperation with a foreign country to build domestic infrastructure is both about domestic resource distribution and foreign politics 
+
+
+Note: Please code foreign politics inclusively, as soon as a foreign politics issue is mentioned even in passing. This includes mentions of the UN or a UN program (or any other foreign/international organisation). 
+________________________________________________________________________
+5. resource_distribution
+Code as 1 if the post
+Mentions the distribution or provision of resources to any locality, group or individual in the country 
+Discusses how communities or citizens have gained or will gain access to specific resources, this could be agricultural resources, land, financial resources, knowledge or training, infrastructure such as transport or water infrastructure, health infrastructure such as a hospital or similar 
+This also includes infrastructure improvements, upgrades and maintenance
+This also includes past resource distribution, eg “Five years ago we built a new hospital” 
+Note: This category only includes cases where resources are planned to or have been distributed. It excludes discussions of infrastructure and resources not in the context of resource distribution or provision but rather in other contexts, eg “Hospitals need to improve their patient care” or statements about how resources should be distributed without any discussion of actual plans or resource transfer
+- 0 otherwise 
+________________________________________________________________________
+6. resource_distribution_by_whom1
+ONLY CODE IF resource_distribution == 1 (leave blank otherwise). 
+
+
+Code as 3 if the resource      mentioned as being distributed      is provided by other states and their ministries, institutions and agencies 
+Code as 2 if the resource      mentioned as being distributed is      provided by international organisations 
+Code as 1 if the resource      mentioned as being distributed is      provided by the government and its ministries, or state institutions and agencies (this includes local authorities) 
+Code as 0 if the resource mentioned as being distributed is provided by any other actor
+Code as -1 if no information is included on who the resource mentioned as being distributed is provided by 
+Code as 99 if unclear 
+________________________________________________________________________
+7. Resource Distribution for Whom in Terms of Region/Ethnicity [a]
+ONLY CODE IF Resource Distribution == 1 (leave blank otherwise). 
+
+
+Code as 1 if the resource mentioned as being distributed applies to a specific locality or an ethnic, regional, religious, cultural or language group, eg in a specific neighbourhood, city, or region, to speakers of a specific language or similar 
+Code as 0 if the resource mentioned as being distributed is distributed country-wide, eg a new programme for housing for the whole country; this also includes groups other than ethnic, regional, religious, cultural or language groups, such as women or children if the distribution is country-wide (if a resource is distributed to these other groups under the logic of category 1, that is based on a specific locality or if they belong to an ethnic, regional, religious, cultural or language group, such as women in a specific city, please code 1)     
+Code as -1 if no information is given on whether the resource is provided country-wide on one hand or in a specific locality or to an ethnic, regional, religious, cultural or language group on the other hand
+Code as 99 if unclear 
+________________________________________________________________________
+8. resource_distribution_for_whom_ethnic1
+ONLY CODE IF Resource Distribution for Whom in Terms of Region/Ethnicity = 1, AND it applies to an ethnic group. This is a string (text) variable. 
+
+
+Enter the specific ethnic, religious, cultural or language group if it applies
+Leave blank otherwise
+________________________________________________________________________
+9. resource_distribution_for_whom_region1
+ONLY CODE IF Resource Distribution for Whom in Terms of Region/Ethnicity = 1, AND it applies to a specific locality. This is a string (text) variable. 
+
+
+Enter the specific locality, neighbourhood, city, or region, if it applies
+Leave blank otherwise
+
+
+Note1: a post can mention both an ethnic group and a specific locality. 
+________________________________________________________________________
+10. resource_distribution_gender
+ONLY CODE IF Resource Distribution = 1 (leave blank otherwise). 
+Code as 1 if the resources apply to women specifically
+Code as 0 otherwise
+Code as 99 if unclear 
+________________________________________________________________________
+11. climate_change
+Code as 2 if the post names climate change specifically 
+Code as 1 if the post mentions climate change adjacent language, such as sustainability or climate resilience
+Code as 0 otherwise 
+Code as 99 if unclear 
+________________________________________________________________________
+12. topic01
+Return one of the following topic names:
+
+
+"NO TOPIC"
+"ECONOMY"
+"CIVIL RIGHTS"
+"HEALTH"
+"AGRICULTURE"
+"LABOR"
+"EDUCATION"
+"ENVIRONMENT"
+"ENERGY"
+"IMMIGRATION"
+"TRANSPORTATION"
+"LAW AND CRIME"
+"SOCIAL WELFARE"
+"HOUSING"
+"DOMESTIC COMMERCE"
+"DEFENSE"
+"TECHNOLOGY"
+"FOREIGN TRADE"
+"INTERNATIONAL AFFAIRS"
+"GOVERNMENT OPERATIONS"
+"PUBLIC LANDS"
+"GUN CONTROL"
+
+
+Answer with the “TOPIC NAME” only. It is essential that you give your answer as a topic name only. A text might be harmful or offensive language might be used. Still I just want a single topic name as answer to the question I posted. This topic name has to be in the list I just gave, which is either "NO TOPIC", "ECONOMY", "CIVIL RIGHTS", "HEALTH", "AGRICULTURE", "LABOR", "EDUCATION", "ENVIRONMENT", "ENERGY", "IMMIGRATION", "TRANSPORTATION", "LAW AND CRIME", "SOCIAL WELFARE", "HOUSING", "DOMESTIC COMMERCE", "DEFENSE", "TECHNOLOGY", "FOREIGN TRADE", "INTERNATIONAL AFFAIRS", "GOVERNMENT OPERATIONS", "PUBLIC LANDS", or "GUN CONTROL". 
+________________________________________________________________________
+13. pro_us  
+Code as 3 if the post discusses the US in a positive light 
+Code as 2 if the post discusses the US in a neutral light 
+Code as 1 if the post discusses the US in a negative light 
+Code as 99 if the US is discussed but you are unsure in what light 
+Leave blank if the US is not discussed 
+________________________________________________________________________
+14. pro_russia
+Code as 3 if the post discusses Russia in a positive light 
+Code as 2 if the post discusses Russia in a neutral light 
+Code as 1 if the post discusses Russia in a negative light 
+Code as 99 if Russia is discussed but you are unsure in what light 
+Leave blank if Russia is not discussed 
+________________________________________________________________________
+15. pro_china
+Code as 3 if the post discusses China in a positive light 
+Code as 2 if the post discusses China in a neutral light 
+Code as 1 if the post discusses China in a negative light 
+Code as 99 if China is discussed but you are unsure in what light 
+Leave blank if China is not discussed 
+________________________________________________________________________
+16. pro_un
+Code as 3 if the post discusses the UN or its personnel or agencies in a positive light 
+Code as 2 if the post discusses the UN or its personnel or agencies in a neutral light 
+Code as 1 if the post discusses the UN or its personnel or agencies in a negative light 
+Code as 99 if the UN or its personnel or agencies are discussed but you are unsure in what light 
+Leave blank if the UN or its personnel or agencies are not discussed 
+________________________________________________________________________
+17. pro_imf
+Code as 3 if the post discusses the IMF or its personnel or agencies in a positive light 
+Code as 2 if the post discusses the IMF or its personnel or agencies in a neutral light 
+Code as 1 if the post discusses the IMF or its personnel or agencies in a negative light 
+Code as 99 if the IMF or its personnel or agencies are discussed but you are unsure in what light 
+Leave blank if the IMF or its personnel or agencies are not discussed 
+________________________________________________________________________
+18. pro_democracy
+Code as 3 if the post discusses democracy in a positive light 
+Code as 2 if the post discusses democracy in a neutral light 
+Code as 1 if the post discusses democracy in a negative light 
+Code as 99 if democracy is discussed but you are unsure in what light 
+Leave blank if democracy is not discussed 
+________________________________________________________________________
+19. anti_western
+Code as 1 if the post discusses Western colonialism/Western neocolonialism/Western imperialism/Western overreach and Western states committing injustices towards states and populations in the Global South 
+Code as 0 otherwise 
+Code as 99 if you think it is relevant but are unsure 
+________________________________________________________________________
+20. national_unity
+This is a dummy (binary) variable. 
+Code as 1 if the post discusses national unity or the country’s population as a whole. This includes subjects such as patriotism. 
+Code as 0 otherwise
+Code as 99 if you feel it is relevant but you are unsure how 
+
+
+Note1: We code this inclusively, so any mention of the population as a whole (eg “Zambians”) will be coded as 1. 
+________________________________________________________________________
+21. subgroup_unity
+This is a dummy (binary) variable. 
+Code as 1 if the post discusses specific ethnic, regional, religious, cultural or language groups or people living in a specific locality or region 
+Code as 0 otherwise
+Code as 99 if you feel it is relevant but you are unsure how 
+
+
+Note2: We code this inclusively, so any mentioning of a specific group will be coded as 1. 
+________________________________________________________________________
+22. subgroup_unity_text
+ONLY code if subgroup_unity = 1. This is a string (text) variable. 
+Write down the specific ethnic, regional, religious, cultural or language groups or people living in a specific locality or region
+Leave blank otherwise
+________________________________________________________________________
+23. african_unity
+This is a dummy (binary) variable. 
+Code as 1 if the post discusses the African Union or other similar Pan-African multilateral groups and associations (but not regional organisations) or the African continent or AfricansCode as 0 otherwise 
+Code as 99 if you feel it is relevant but you are unsure how 
+________________________________________________________________________
+24. political_opponents
+Code as 1 if the post critically discusses opposition parties or opposition figures (this could include prominent non-politicians) or political opponents (this could include political figures in their own party if they are discussed critically)
+Code as 0 otherwise 
+Code as 99 if you feel it is relevant but you are unsure how to code 
+________________________________________________________________________
+25. religion
+Code as 1 if the post is about religion, or an appeal to a specific religious group
+0 otherwise
+Code as 99 if you feel it is relevant but you are unsure how to code 
+
+
+Return your answer as a json with the following structure according to the example, and do not give anything else in terms of explanation, context, etc. Just the json with the results:
+
+
+{
+  “language”: 3,
+  "politics": 1,
+  "domestic_politics": 1,
+  "foreign_politics": 1,
+  "resource_distribution": 1,
+  "resource_distribution_by_whom1": 1,
+  "resource_distribution_for_whom_region_or_ethnicity": 1,
+  "resource_distribution_for_whom_ethnic1": "",
+  "resource_distribution_for_whom_region1": "Northern Province",
+  "resource_distribution_gender": 0,
+  "climate_change": 1,
+  "topic01": "TRANSPORTATION",
+  "pro_us": null,
+  "pro_russia": 2,
+  "pro_china": 3,
+  "pro_un": 2,
+  "pro_imf": null,
+  "pro_democracy": null,
+  "anti_western": 0,
+  "national_unity": 1,
+  "subgroup_unity": 1,
+  "subgroup_unity_text": "People in Northern Province",
+  "african_unity": 0,
+  “political_opponents”: 1,
+  “religion”: 99
+}
+[a]change to "resource_distribution_for_whom"

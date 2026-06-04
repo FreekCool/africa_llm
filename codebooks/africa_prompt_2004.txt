@@ -1,0 +1,405 @@
+﻿This is the codebook for the coding task at hand.
+________________________________________________________________________
+1. language
+Code what language the post is in. 
+
+
+“English” 
+“French” 
+“Arabic” 
+“Portuguese”
+“Swahili” 
+“Hausa” 
+“Yoruba” 
+“Other”
+        If other, code “Other(<add-language>)”
+“Unclear” 
+
+
+If the post has more than one language, code all languages separated by a semi-colon: “;”
+For example, if the post includes text in English and French, code as “English;French”
+________________________________________________________________________
+2. politics
+
+
+
+
+Use the following guidelines when deciding whether the post is about politics:
+
+
+A post should be considered as politically relevant (so be coded as  “politics”) if:
+It’s about any political issue, (potentially) politically relevant topics (including conspiracy theories) are being discussed, such as science, immigration, civil liberties, labor, law & crime, international affairs, education, healthcare, housing, etc.
+It’s about a politically relevant (or historical) event/s, political actor/s
+It is about development issues, infrastructure or the distribution of resources 
+“not political” otherwise (not politically relevant)
+
+
+Unpolitical are posts about the person’s family, hobbies, and similar unless they are discussed in a political context, eg if the president takes place in a run to promote health policies then this is political
+
+
+Posts about the beauty of the country are only unpolitical if they contain no reference to specific localities/regions or issues, for example it is political if it discusses wildlife preservation or that one locality/region in particular is beautiful 
+Code as “unclear” if it is unclear whether the post is about politics or not
+
+
+Note1: Please code politics inclusively, as soon as a political issue is mentioned even in passing. 
+________________________________________________________________________
+3. domestic_politics
+ONLY CODE IF 2. politics == “political” (“not applicable” otherwise).
+Code as “domestic politics” if 
+Post is about domestic politics or domestic resource distribution AND 2. politics==“politics”
+Code as “not domestic politics” if the post is not about domestic politics or domestic resource distribution AND 2. politics==“politics”
+Code as “unclear” if it is unclear whether the post is about domestic politics or not AND 2. politics==“politics”
+Code as “not applicable” if 2. politics ==“not political”
+
+
+Note1: Please code domestic politics inclusively, as soon as a domestic political issue is mentioned even in passing. 
+________________________________________________________________________
+4. foreign_politics
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise):
+Code as “foreign politics” if 
+Post is about foreign politics AND 2. politics==“politics”
+Mentions foreign affairs topics AND 2. politics==“politics”
+Mentions foreign leaders or state visits AND 2. politics==“politics”
+Code as “not foreign politics” if the post is not about foreign politics or does not mention a foreign or international institution AND 2. politics==“politics”
+Code as “unclear” if it is unclear whether the post is about foreign politics or not AND 2 .politics==“politics”
+Code as “not applicable” if 2. politics == “not political”
+
+
+Note: Posts can be both about foreign and domestic politics, eg a post that mentions a cooperation with a foreign country to build domestic infrastructure is both about domestic resource distribution and foreign politics 
+
+
+Note: Please code foreign politics inclusively, as soon as a foreign politics issue is mentioned even in passing. This includes mentions of the UN or a UN program (or any other foreign/international organisation). 
+________________________________________________________________________
+5. resource_distribution
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+Code as “resource distribution” if 
+Mentions the distribution or provision of resources country-wide or to any locality, group or individual in the country 
+Or discusses how communities or citizens have gained or will gain access to specific resources, this could be agricultural resources, land, financial resources, knowledge or training, infrastructure such as transport or water infrastructure, health infrastructure such as a hospital or similar 
+This also includes infrastructure improvements, upgrades and maintenance
+This also includes past resource distribution, for example “Five years ago we built a new hospital” 
+
+
+Code as “not resource distribution” if 2. politics==“politics” AND the post
+Does not mention the distribution or provision of resources to any locality, group or individual in the country, or 
+Does not discuss how communities or citizens have gained or will gain access to specific resources, this could be agricultural resources, land, financial resources, knowledge or training, infrastructure such as transport or water infrastructure, health infrastructure such as a hospital or similar, or
+Does not mention infrastructure improvements, upgrades and maintenance, or
+Does not mention past resource distribution, for example “Five years ago we built a new hospital”  
+
+
+Code as “unclear” if 2. politics==“politics” AND it is unclear whether there is a mention of resources being distributed or not
+
+
+Code as “not applicable” if 2. politics == “not political”, or if the resource is not distributed to the country in question. For example, if the post mentions resources that have been or will be distributed to a foreign state, code as “not applicable”
+
+
+Note1: The “resource distribution” category only includes cases where resources are planned to be or have been distributed. It excludes discussions of infrastructure and resources not in the context of resource distribution or provision but rather in other contexts, such as “Hospitals need to improve their patient care” or statements about how resources should be distributed without any discussion of actual plans or resource transfer. 
+
+
+________________________________________________________________________
+6. resource_distribution_by_whom1
+ONLY CODE IF 5. resource_distribution == “resource distribution” (code as “not applicable” otherwise). 
+
+
+Code as “other state” if 5. resource_distribution==“resource distribution” AND the resource      mentioned as being distributed is provided by other states and their ministries, institutions and agencies 
+Code as “international organisation”  if 5. resource_distribution==“resource distribution” AND the resource mentioned as being distributed is provided by international organisations (such as the IMF or the World Bank)
+Code as “national government” if 5. resource_distribution==“resource distribution” AND the resource mentioned as being distributed is provided by the government and its ministries, or state institutions and agencies (this includes local authorities) 
+Code as “other” if 5. resource_distribution==“resource distribution” AND the resource mentioned as being distributed is provided by any other actor
+Code as “not specified” if 5. resource_distribution==“resource distribution” AND no information is included on who the resource mentioned as being distributed is provided by 
+Code as “unclear” if 5. resource_distribution==“resource distribution” AND it is unclear who is distributing the resource
+Code as “not applicable” if 5. resource_distribution == “not applicable”
+
+
+If 5. resource_distribution==“resource distribution” and the resource mentioned is being provided by several actors, code all actors separated by a semi-colon. For example, if the resource is being or has been distributed by an international organisation and the national government, code as “international organisation;national government”. 
+
+
+________________________________________________________________________
+7. resource_distribution_for_whom1 
+ONLY CODE IF 5. resource distribution == “resource distribution” (code as “not applicable” otherwise). 
+
+
+Code as “specific locality or group” if 5. resource_distribution==“resource distribution” AND the resource mentioned as being distributed applies to a specific locality or an ethnic, regional, religious, cultural or language group, eg in a specific neighbourhood, city, or region, to speakers of a specific language or similar 
+Code as “country-wide” if 5. resource_distribution==“resource distribution” AND the resource mentioned is being distributed is distributed country-wide, eg a new programme for housing for the whole country; this also includes groups other than ethnic, regional, religious, cultural or language groups, such as women or children if the distribution is country-wide (if a resource is distributed to these other groups under the logic of category “specific locality or group”, that is based on a specific locality or if they belong to an ethnic, regional, religious, cultural or language group, such as women in a specific city, please code as “specific locality or group”)     
+Code as “not specified” if 5. resource_distribution==“resource distribution” AND no information is given on whether the resource is provided country-wide on one hand or in a specific locality or to an ethnic, regional, religious, cultural or language group on the other hand
+Code as “unclear” if 5. resource_distribution==“resource distribution” AND it is unclear who is receiving the resource 
+Code as “not applicable” if 5. resource_distribution!=“resource distribution”
+
+
+If 5. resource_distribution==“resource distribution” and more than one category for resource_distribution_for_whom1 applies, e.g. because more than one resource is mentioned with different distributional logics, code the variable with the categories separated by a semi-colon. For example, if some resource is being distributed country-wide and another is distributed to a specific locality or group, code as “country-wide;specific locality or group”
+________________________________________________________________________
+8. resource_distribution_for_whom_ethnic1
+ONLY CODE IF 7. resource_distribution_for_whom1 == “specific locality or group” (code as “not applicable” otherwise)
+
+
+Enter the specific ethnic, religious, cultural or language group if 7. resource_distribution_for_whom1 == “specific locality or group” AND it applies to an ethnic, religious, cultural or language group
+Enter “unclear” if 7. resource_distribution_for_whom1 == “specific locality or group” AND it applies to an ethnic, religious, cultural or language group but you are not sure which specific ethnic, religious, cultural or language group is being referred to in the post
+Code as “not applicable” if 7. resource_distribution_for_whom1 == “specific locality or group” but does not apply to an ethnic, religious, cultural or language group OR 7. resource_distribution_for_whom1 != “specific locality or group”
+
+
+Note: if 7. resource_distribution_for_whom1 == “specific locality or group” and it applies to an ethnic, religious, cultural or language group, then the text entered in resource_distribution_for_whom_ethnic1 should be copied from the phrase(s) used in the English translation of the post. 
+________________________________________________________________________
+9. resource_distribution_for_whom_region1
+ONLY CODE IF 7. resource_distribution_for_whom1 == “specific locality or group” (code as “not applicable” otherwise)
+
+
+Enter the specific locality, neighbourhood, city, or region, if 7. resource_distribution_for_whom1 == “specific locality or group” AND it applies to a specific locality, neighbourhood, city, or region
+Enter “unclear” if 7. resource_distribution_for_whom1 == “specific locality or group” AND it applies to a specific locality, neighbourhood, city, or region, but it is unclear which locality it applies to
+Code as “not applicable” if 7. resource_distribution_for_whom1 == “specific locality or group” but does not apply to a specific locality, neighbourhood, city, or region OR resource_distribution_for_whom1!=“specific locality or group”
+
+
+Note1: if 7. resource_distribution_for_whom1 == “specific locality or group” and it applies to to a specific locality, neighbourhood, city, or region, then the text entered in resource_distribution_for_whom_region1 should be copied from the phrase(s) used in the English translation of the post. 
+
+
+Note2: a post can mention both an ethnic group and a specific locality. 
+________________________________________________________________________
+10. resource_distribution_gender
+ONLY CODE IF 5. resource distribution == “resource distribution” (code as “not applicable” otherwise). 
+
+
+Code as "resources for women" if 5. resource distribution == "resource distribution" AND the resources being distributed apply to women specifically
+Code as "resources not specifically for women" if 5. resource distribution == "resource distribution" AND the resources being distributed do not apply to women exclusively
+Code as "unclear" if 5. resource distribution == "resource distribution" but it is unclear whether the resources apply to women specifically or not
+
+
+Code as “not applicable” if resource_distribution == “not applicable” 
+________________________________________________________________________
+11. climate_change
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise):
+
+
+Code as “mentions climate change” if the post names climate change or global warming specifically AND 2. politics==“politics”
+Code as “mentions sustainability” if the post mentions climate change adjacent language, such as sustainability or climate resilience but does not mention climate change specifically AND 2. politics==“politics”
+Code as “unclear” if it is unclear whether the post mentions climate change or adjacent language AND 2. politics==“politics”
+Code as “not applicable” if 2. politics == “not political”
+________________________________________________________________________
+12. topic
+
+
+Return up to 3 of the following topic names:
+
+
+"NO TOPIC"
+"ECONOMY"
+"CIVIL RIGHTS"
+"HEALTH"
+"AGRICULTURE"
+"LABOR"
+"EDUCATION"
+"ENVIRONMENT"
+"ENERGY"
+"IMMIGRATION"
+"TRANSPORTATION"
+"LAW AND CRIME"
+"SOCIAL WELFARE"
+"HOUSING"
+"DOMESTIC COMMERCE"
+"DEFENSE"
+"TECHNOLOGY"
+"FOREIGN TRADE"
+"INTERNATIONAL AFFAIRS"
+"GOVERNMENT OPERATIONS"
+"PUBLIC LANDS"
+"CULTURE"
+"ETHNICITY"
+
+
+If more than one topic is discussed, you can code for up to 3 of these topic labels, separated by semi-colons, such as “EDUCATION;HOUSING;ENERGY”. All topic labels must be in the list described above: "NO TOPIC", "ECONOMY", "CIVIL RIGHTS", "HEALTH", "AGRICULTURE", "LABOR", "EDUCATION", "ENVIRONMENT", "ENERGY", "IMMIGRATION", "TRANSPORTATION", "LAW AND CRIME", "SOCIAL WELFARE", "HOUSING", "DOMESTIC COMMERCE", "DEFENSE", "TECHNOLOGY", "FOREIGN TRADE", "INTERNATIONAL AFFAIRS", "GOVERNMENT OPERATIONS", "PUBLIC LANDS", "CULTURE”, or ETHNICITY. 
+________________________________________________________________________
+13. pro_us  
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “positive towards the US” if 2. politics==“politics” AND the post discusses the US in a positive light 
+Code as “neutral towards the US” if 2. politics==“politics” AND the post discusses the US in a neutral light 
+Code as “negative towards the US” if 2. politics==“politics” AND the post discusses the US in a negative light 
+Code as “unclear” if 2. politics==“politics” AND the US is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of the US” if 2. politics==“politics” AND the post does not mention the US
+Code as “not applicable” if 2. politics == “not political”
+________________________________________________________________________
+14. pro_russia
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “positive towards Russia” if 2. politics==“politics” AND the post discusses Russia in a positive light 
+Code as “neutral towards Russia” if 2. politics==“politics” ANDthe post discusses Russia in a neutral light 
+Code as “negative towards Russia” if 2. politics==“politics” AND the post discusses Russia in a negative light 
+Code as “unclear” if 2. politics==“politics” AND Russia is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of Russia” if 2.  politics==“politics” AND the post does not mention Russia
+Code as “not applicable” if 2. politics == “not political”
+________________________________________________________________________
+15. pro_china
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “positive towards China” if 2. politics==“politics” AND the post discusses China in a positive light 
+Code as “neutral towards China” if 2. politics==“politics” AND the post discusses China in a neutral light 
+Code as “negative towards China” if 2. politics==“politics” AND the post discusses China in a negative light 
+Code as “unclear” if 2. politics==“politics” AND China is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of China” if 2. politics==“politics” AND the post does not mention China
+Code as “not applicable” if 2. politics == “not political”
+________________________________________________________________________
+16. pro_un
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “positive towards the UN” if 2. politics==“politics” AND the post discusses the UN or its personnel or agencies in a positive light 
+Code as “neutral towards the UN” if 2. politics==“politics” AND the post discusses the UN or its personnel or agencies in a neutral light 
+Code as “negative towards the UN” if 2. politics==“politics” AND the post discusses the UN or its personnel or agencies in a negative light 
+Code as “unclear” if 2. politics==“politics” AND the UN is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of the UN” if 2. politics==“politics” AND the post does not mention the UN or its personnel or agencies
+Code as “not applicable” if 2. politics == “not political”
+
+
+________________________________________________________________________
+17. pro_imf
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+Code as “positive towards the IMF” if 2. politics==“politics” AND the post discusses the IMF or its personnel or agencies in a positive light 
+Code as “neutral towards the IMF” if 2. politics==“politics” AND the post discusses the IMF or its personnel or agencies in a neutral light 
+Code as “negative towards the IMF” if 2. politics==“politics” AND the post discusses the IMF or its personnel or agencies in a negative light 
+Code as “unclear” if 2. politics==“politics” AND the IMF is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of the IMF” if 2. politics==“politics” AND the post does not mention the IMF or its personnel or agencies
+Code as “not applicable” if 2. politics == “not political”
+
+
+________________________________________________________________________
+18. pro_democracy
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “positive towards democracy” if 2. politics==“politics” AND the post discusses democracy in a positive light 
+Code as “neutral towards democracy” if 2. politics==“politics” AND the post discusses democracy in a neutral light 
+Code as “negative towards democracy” if 2. politics==“politics” AND the post discusses democracy in a negative light 
+Code as “unclear” if 2. politics==“politics” AND democracy is discussed but you are unsure if it is in a positive, neutral, or negative light
+Code as “no mention of democracy” if 2. politics==“politics” AND the post does not mention democracy
+Code as “not applicable” if 2. politics == “not political”
+
+
+Note1: We use an inclusive concept of democracy, including civil rights and liberties associated with liberal democracy.
+
+
+________________________________________________________________________
+19. anti_western
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “anti-western” if 2. politics==“politics” AND the post discusses Western colonialism/Western neocolonialism/Western imperialism/Western overreach, Western states committing injustices towards states and populations in the Global South. This also includes the mentioning of specific Western states in relation with these concepts. 
+Code as “not anti-western” if 2. politics==“politics” AND the post does not discuss Western colonialism/Western neocolonialism/Western imperialism/Western overreach or Western states committing injustices towards states and populations in the Global South
+Code as “unclear” if 2. politics==“politics” AND you think it is relevant but are unsure 
+Code as “not applicable” if 2. politics == “not political”
+
+
+
+
+________________________________________________________________________
+20. national_unity
+Code as “national unity” if the post discusses national unity or the country’s population as a whole. This includes subjects such as patriotism. 
+Code as “no mention of the nation or national unity” if the post does not discuss national unity or the country’s population as a whole
+Code as “unclear” if you feel it is relevant but you are unsure how 
+
+
+Note1: We code this inclusively, so any mention of the population as a whole (eg “Zambians”) will be coded as “national unity”. 
+________________________________________________________________________
+
+
+21. national_unity_narrow
+
+
+Code as “patriotism” if the text discusses national unity or subjects such as patriotism specifically, but does not include mere mention of the population as a whole if those themes are absent
+Code as “not specifically patriotic” if the text does not discuss patriotism specifically
+Code as “unclear” if and you feel it is relevant but you are unsure how 
+
+
+Note1: We DO NOT code this inclusively, so mention of the population as a whole (eg “Zambians”) will be coded as “not specifically patriotic” unless there is specific discussion of national unity themes. 
+________________________________________________________________________
+
+
+22. subgroup_unity
+
+
+Code as “subgroup unity” if the post discusses specific ethnic, regional, religious, cultural or language groups or people living in a specific locality or region in the country in question
+Code as “no mention of specific subgroup” if the post does not discuss a specific ethnic, regional, religious, cultural or language groups or people living in a specific locality or region
+Code as “unclear” if you feel it is relevant but you are unsure how 
+
+
+Note1: We code this inclusively, so any mention of a specific group will be coded as “subgroup unity”. 
+Note2: Do not include the mere mentioning of localities such as neighborhoods, cities, or regions, but include mentioning of people of or in these localities. Also do not include the mentioning of specific, individual people from/in a locality, but rather people from/in the locality more broadly. 
+Note3: Only consider specific groups from the country in question. 
+Note4: Groups such as women, the youth, or disabled individuals do not count as a subgroup in our case, UNLESS the post specifies the ethnic, regional, religious, cultural, language group, or the specific locality or region these women, youths, or disabled individuals are from. 
+________________________________________________________________________
+23. subgroup_unity_text
+ONLY CODE IF 22. subgroup_unity == “subgroup unity ” (code as “not applicable” otherwise).
+
+
+Write down the specific ethnic, regional, religious, cultural or language groups or people living in a specific locality or region that the post seeks to appeal to.
+Enter “unclear” if 22. subgroup_unity==“subgroup unity” but it is unclear which ethnic, regional, religious, cultural or language groups or people living in a specific locality or region the post is referring to
+Code as “not applicable” if 22. subgroup_unity!=“subgroup unity”
+
+
+________________________________________________________________________
+24. african_unity
+Code as “african unity” if the post discusses the African Union or other similar Pan-African multilateral groups and associations (but not regional organisations) or the African continent or Africans
+Code as “no mention of africa” if the post does not discuss the African Union or other similar Pan-African multilateral groups and associations (but not regional organisations) or the African continent or Africans
+Code as “unclear” if you feel it is relevant to the African Union or African continent or Africans but you are unsure
+
+
+________________________________________________________________________
+25. political_opponents
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+Code as “mentions political opponents” if 2. politics==“politics” AND the post critically discusses named or implied (e.g. “the previous government”) domestic opposition parties, or opposition figures (this could include prominent non-politicians), or political opponents (this could include political figures in their own party if they are discussed critically). This category is reserved for opponents predominantly operating in the political or public sphere, not for those predominantly engaging in political violence.  
+Code as “no mention of political opponents” if 2. politics==“politics” AND the post does not critically discuss opposition parties or opposition figures or political opponents
+Code as “unclear” if 2. politics==“politics” and you feel it is relevant but you are unsure how to code 
+Code as “not applicable” if 2. politics == “not political”
+
+
+________________________________________________________________________
+26. political_opponents_viol
+ONLY CODE IF 2. politics == “politics” (code as “not applicable” otherwise).
+
+
+Code as “mentions violent group” if 2. politics==“politics” AND the post critically discusses political opponents that predominantly engage in political violence, such as armed or terrorist groups.
+Code as “no mention of violent group” if 2. politics==“politics” AND the post does not critically discuss political opponents that predominantly engage in political violence. 
+Code as “unclear” if 2. politics==“politics” and you feel it is relevant but you are unsure how to code 
+Code as “not applicable” if 2. politics == “not political”
+
+
+________________________________________________________________________
+27. religion
+Code as “religious” if the post is about religion, or an appeal to a specific religious group, or uses religious language
+Code as “no mention of religion” if the post does not mention religion or a religious group
+Code as “unclear” if you feel it is relevant but you are unsure how to code 
+
+
+________________________________________________________________________
+
+
+Return your answer as a json with the following structure according to the example, and do not give anything else in terms of explanation, context, etc. Just the json with the results:
+
+
+{
+  "language": "Arabic",
+  "politics": "politics",
+  "domestic_politics": "domestic politics",
+  "foreign_politics": "foreign politics",
+  "resource_distribution": "resource distribution",
+  "resource_distribution_by_whom1": "national government",
+  "resource_distribution_for_whom1": "specific locality or group",
+  "resource_distribution_for_whom_ethnic1": "not applicable",
+  "resource_distribution_for_whom_region1": "Northern Province",
+  "resource_distribution_gender": "resources not specifically for women",
+  "climate_change": "mentions sustainability",
+  "topic": "TRANSPORTATION",
+  "pro_us": "no mention of the US",
+  "pro_russia": "neutral towards Russia",
+  "pro_china": "positive towards China",
+  "pro_un": "neutral towards the UN",
+  "pro_imf": "no mention of the IMF",
+  "pro_democracy": "no mention of democracy",
+  "anti_western": "not anti-western",
+  "national_unity": "national unity",
+  "national_unity_narrow": "not specifically patriotic",
+  "subgroup_unity": "subgroup unity",
+  "subgroup_unity_text": "People in Northern Province",
+  "african_unity": "no mention of africa",
+  "political_opponents": "mentions political opponents",
+  "political_opponents_viol": "no mention of violent group",
+  "religion": "unclear"
+}
