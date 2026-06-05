@@ -569,9 +569,12 @@ def _extract_pred_json(raw_completion: str):
     # Use the robust helper from utils.py to get the last {...} block
     candidate = _extract_last_json(s)
 
-    # First, try a direct JSON parse
+    # First, try a direct JSON parse. json.loads can return any JSON type
+    # (int, str, list, ...); the contract here is "a dict or None", so a
+    # successfully-parsed non-dict means the model didn't emit an object.
     try:
-        return json.loads(candidate)
+        obj = json.loads(candidate)
+        return obj if isinstance(obj, dict) else None
     except Exception:
         pass
 
@@ -590,7 +593,8 @@ def _extract_pred_json(raw_completion: str):
     normalised = candidate.translate(translation_table)
 
     try:
-        return json.loads(normalised)
+        obj = json.loads(normalised)
+        return obj if isinstance(obj, dict) else None
     except Exception:
         return None
 
@@ -743,6 +747,13 @@ def run_simple_val_inference(
     per_target_true = defaultdict(list)
     per_target_pred = defaultdict(list)
 
+    # Track how many completions we could parse a JSON object from. Items we
+    # cannot parse are excluded from per-target metrics (no predictions to
+    # score), so we report the parse rate separately and print each failure
+    # rather than silently dropping it.
+    parse_stats = {"ok": 0, "fail": 0}
+    parse_failures = []  # (index, raw_completion snippet) for unparseable items
+
     print("\n" + "=" * 80)
     print(f"{split_name.upper()} INFERENCE (first {n_print} examples, max_new_tokens={max_new_tokens})")
     print("=" * 80)
@@ -759,6 +770,22 @@ def run_simple_val_inference(
     def process_one_result(i, prompt_text, gold, raw_completion, suffix_text_or_none):
         """Shared logic: parse, accumulate per-target, print if i < n_print."""
         parsed = _extract_pred_json(raw_completion)
+        if parsed is None:
+            parse_stats["fail"] += 1
+            snippet = (raw_completion or "").strip()
+            parse_failures.append((i, snippet))
+            # Always surface unparseable completions (not just the first
+            # n_print) so we can see what the model produced instead of a
+            # JSON object, rather than silently dropping the example.
+            print(
+                f"\n[parse-fail] Example {i + 1}/{N}: could not parse a JSON object "
+                f"from the completion\n"
+                f"  GOLD (first 300 chars): {gold[:300]}{'...' if len(gold) > 300 else ''}\n"
+                f"  GENERATED (first 600 chars): "
+                f"{snippet[:600].replace(chr(10), ' ')}{'...' if len(snippet) > 600 else ''}"
+            )
+        else:
+            parse_stats["ok"] += 1
         try:
             gold_dict = json.loads(gold)
         except Exception:
@@ -938,6 +965,17 @@ def run_simple_val_inference(
     if training_time_sec is not None and split_name == "val":
         print(f"[{split_name}-inference] training time (this epoch): {training_time_sec:.2f}s")
 
+    # ---- JSON parse rate ----
+    n_processed = parse_stats["ok"] + parse_stats["fail"]
+    json_parse_frac = parse_stats["ok"] / n_processed if n_processed else 0.0
+    print(
+        f"[{split_name}-inference] JSON parse rate: {parse_stats['ok']}/{n_processed} "
+        f"({json_parse_frac * 100:.1f}%) — {parse_stats['fail']} unparseable"
+    )
+    if parse_failures:
+        fail_positions = ", ".join(str(idx + 1) for idx, _ in parse_failures)
+        print(f"[{split_name}-inference] unparseable example positions: {fail_positions}")
+
     # ---- per-target metrics ----
     print("\n" + "-" * 80)
     print(f"{split_name.upper()} METRICS PER TARGET (N={N} examples with prompts)")
@@ -1108,6 +1146,24 @@ def run_simple_val_inference(
     }
     rows.append(timing_row)
 
+    # JSON parse-rate row: how many completions we could parse a JSON object
+    # from (n_answered / n_gold = parse rate). Unparseable items are excluded
+    # from per-target metrics, so this records the coverage they reflect.
+    parse_row = dict(timing_row)
+    parse_row.update(
+        {
+            "target": "_json_parse",
+            "n_gold": n_processed,
+            "n_answered": parse_stats["ok"],
+            "answered_frac": json_parse_frac,
+            "total_inference_sec": None,
+            "n_prompts": None,
+            "avg_sec_per_prompt": None,
+            "training_time_sec": None,
+        }
+    )
+    rows.append(parse_row)
+
     print("=" * 80 + "\n")
 
     # Optionally save metrics to CSV (includes timing row)
@@ -1127,6 +1183,9 @@ def run_simple_val_inference(
         "total_inference_sec": total_inference_sec,
         "n_prompts": N,
         "avg_sec_per_prompt": avg_sec_per_prompt,
+        "json_parse_ok": parse_stats["ok"],
+        "json_parse_total": n_processed,
+        "json_parse_frac": json_parse_frac,
     }
 
 
