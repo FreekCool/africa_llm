@@ -32,7 +32,7 @@ from collections import defaultdict
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from transformers import (
     AutoTokenizer,
     AutoProcessor,
@@ -496,6 +496,19 @@ def build_simple_sft_dataset(
                     "check system vs user split"
                 )
         print(f"  tail: ...{texts[0][-400:]}")
+        # Length distributions to catch an undersized max_tokens or odd answers.
+        _al = pd.Series([_token_len(a, tokenizer) for a in answers])
+        print(f"  answer tokens: mean={_al.mean():.0f} median={_al.median():.0f} "
+              f"min={int(_al.min())} max={int(_al.max())} p95={_al.quantile(0.95):.0f}")
+        print(f"  kept {len(texts)}/{len(df)} rows ({len(df) - len(texts)} skipped: NaN text/answer)")
+        step = max(1, len(texts) // 50)
+        _sl = pd.Series([_token_len(t, tokenizer) for t in texts[::step][:50]])
+        print(f"  full-seq tokens (sample n={len(_sl)}): mean={_sl.mean():.0f} "
+              f"median={_sl.median():.0f} min={int(_sl.min())} max={int(_sl.max())} "
+              f"(max_seq_length={max_seq_length})")
+        if int(_sl.max()) >= max_seq_length:
+            print(f"  *** WARNING: sample reaches max_seq_length={max_seq_length} — "
+                  "answer may be truncated; raise max_tokens. ***")
 
     return Dataset.from_dict({"text": texts, "instruction": instructions, "answer": answers})
 
@@ -754,6 +767,13 @@ def run_simple_val_inference(
     parse_stats = {"ok": 0, "fail": 0}
     parse_failures = []  # (index, raw_completion snippet) for unparseable items
 
+    # Generation diagnostics: token counts per example, plus how often the model
+    # produced nothing or ran to max_new_tokens (a strong sign of never-closed JSON).
+    gen_lengths = []
+    gen_stats = {"empty": 0, "hit_max": 0}
+    # Why JSON parsing failed, so we can tell truncation from malformed from empty.
+    parse_fail_cats = {"empty": 0, "no_brace": 0, "unbalanced_brace": 0, "invalid_json": 0}
+
     print("\n" + "=" * 80)
     print(f"{split_name.upper()} INFERENCE (first {n_print} examples, max_new_tokens={max_new_tokens})")
     print("=" * 80)
@@ -767,13 +787,28 @@ def run_simple_val_inference(
     )
     inference_start = time.perf_counter()
 
-    def process_one_result(i, prompt_text, gold, raw_completion, suffix_text_or_none):
+    def process_one_result(i, prompt_text, gold, raw_completion, suffix_text_or_none,
+                           n_gen_tokens=None):
         """Shared logic: parse, accumulate per-target, print if i < n_print."""
+        if n_gen_tokens is not None:
+            gen_lengths.append(n_gen_tokens)
+            if n_gen_tokens >= max_new_tokens:
+                gen_stats["hit_max"] += 1
+        if not (raw_completion or "").strip():
+            gen_stats["empty"] += 1
         parsed = _extract_pred_json(raw_completion)
         if parsed is None:
             parse_stats["fail"] += 1
             snippet = (raw_completion or "").strip()
             parse_failures.append((i, snippet))
+            if not snippet:
+                parse_fail_cats["empty"] += 1
+            elif "{" not in snippet:
+                parse_fail_cats["no_brace"] += 1
+            elif snippet.count("{") != snippet.count("}"):
+                parse_fail_cats["unbalanced_brace"] += 1
+            else:
+                parse_fail_cats["invalid_json"] += 1
             # Always surface unparseable completions (not just the first
             # n_print) so we can see what the model produced instead of a
             # JSON object, rather than silently dropping the example.
@@ -881,7 +916,8 @@ def run_simple_val_inference(
                 gold = val_gold_raw[i]
                 raw_completion = tokenizer.decode(results[b][0], skip_special_tokens=True)
                 suffix_text = tokenizer.decode(suffix_ids_list[b], skip_special_tokens=True)
-                process_one_result(i, prompt_text, gold, raw_completion, suffix_text)
+                process_one_result(i, prompt_text, gold, raw_completion, suffix_text,
+                                   n_gen_tokens=int(results[b][0].shape[0]))
             for i in range(start, end):
                 if i not in batch_indices:
                     enc = tokenizer(val_prompts[i], return_tensors="pt", padding=False, truncation=False)
@@ -896,7 +932,8 @@ def run_simple_val_inference(
                     )
                     raw_completion = tokenizer.decode(new_tok, skip_special_tokens=True)
                     suffix_text = tokenizer.decode(suf[0], skip_special_tokens=True)
-                    process_one_result(i, val_prompts[i], val_gold_raw[i], raw_completion, suffix_text)
+                    process_one_result(i, val_prompts[i], val_gold_raw[i], raw_completion, suffix_text,
+                                       n_gen_tokens=int(new_tok.shape[0]))
     else:
         # Per-example path
         for i in range(N):
@@ -957,6 +994,7 @@ def run_simple_val_inference(
             process_one_result(
                 i, prompt_text, gold, raw_completion,
                 suffix_text if use_prefix_cache else None,
+                n_gen_tokens=int(new_tokens.shape[0]),
             )
 
     total_inference_sec = time.perf_counter() - inference_start
@@ -975,6 +1013,22 @@ def run_simple_val_inference(
     if parse_failures:
         fail_positions = ", ".join(str(idx + 1) for idx, _ in parse_failures)
         print(f"[{split_name}-inference] unparseable example positions: {fail_positions}")
+
+    # ---- generation diagnostics ----
+    if gen_lengths:
+        _gl = pd.Series(gen_lengths)
+        print(
+            f"[{split_name}-inference] generated tokens: mean={_gl.mean():.0f} "
+            f"median={_gl.median():.0f} min={int(_gl.min())} max={int(_gl.max())}  "
+            f"| empty={gen_stats['empty']}  | hit_max(={max_new_tokens})={gen_stats['hit_max']}"
+        )
+    if parse_stats["fail"]:
+        print(
+            f"[{split_name}-inference] parse-fail breakdown: "
+            f"empty={parse_fail_cats['empty']}  no_brace={parse_fail_cats['no_brace']}  "
+            f"unbalanced_brace(truncated?)={parse_fail_cats['unbalanced_brace']}  "
+            f"invalid_json={parse_fail_cats['invalid_json']}"
+        )
 
     # ---- per-target metrics ----
     print("\n" + "-" * 80)
@@ -1290,7 +1344,7 @@ def run_simple_gemma3(
     )
 
     peft_config = LoraConfig(
-        lora_alpha=16,
+        lora_alpha=128,
         lora_dropout=0.1,
         r=64,
         bias="none",
@@ -1434,6 +1488,25 @@ def run_simple_gemma3(
             print(f"Model loaded for fold {fold_counter}")
             model.print_trainable_parameters()
 
+            # ── Run config summary (one greppable block with the full setup) ──
+            eff_batch = batch_size * grad_accum_steps
+            steps_per_epoch = (len(dataset) + eff_batch - 1) // eff_batch if eff_batch else 0
+            lora_scaling = peft_config.lora_alpha / peft_config.r if peft_config.r else 0.0
+            print("\n" + "=" * 80)
+            print("RUN CONFIG SUMMARY")
+            print("=" * 80)
+            print(f"  model         : {original_model}  (gemma_model={gemma_model})")
+            print(f"  compute_dtype : {compute_dtype}")
+            print(f"  LoRA          : r={peft_config.r}  alpha={peft_config.lora_alpha}  "
+                  f"scaling={lora_scaling:.3f}  dropout={peft_config.lora_dropout}")
+            print(f"  optim         : lr={learning_rate}  epochs={epochs}  seed={train_val_seed}")
+            print(f"  batch         : per_device={batch_size}  grad_accum={grad_accum_steps}  "
+                  f"effective={eff_batch}  steps/epoch≈{steps_per_epoch}")
+            print(f"  lengths       : max_tokens={max_tokens}  max_new_tokens={max_new_tokens}  "
+                  f"max_text_tokens={max_text_tokens}")
+            print(f"  data          : train={len(dataset)}  val={len(val_rows)}  test={len(test_prompts)}")
+            print("=" * 80 + "\n")
+
             # ── 3) Training arguments ─────────────────────────────────
             if base_run_dir is not None:
                 trainer_output_dir = os.path.join(
@@ -1477,6 +1550,54 @@ def run_simple_gemma3(
                 packing=False,
             )
 
+            # ── 3b) Completion-only loss: mask prompt, train only on the answer ──
+            # Gemma-3 opens the assistant turn with "<start_of_turn>model\n". Mask
+            # every label up to and INCLUDING that template, so the loss is computed
+            # only on the answer JSON + its trailing <end_of_turn>. Pass token IDs
+            # (not the raw string) to avoid the standalone-vs-in-context tokenization
+            # mismatch. packing must stay False (it is, above).
+            response_template_ids = tokenizer.encode(
+                "<start_of_turn>model\n", add_special_tokens=False
+            )
+            completion_collator = DataCollatorForCompletionOnlyLM(
+                response_template=response_template_ids,
+                tokenizer=tokenizer,
+            )
+
+            # One-shot mask check: supervised fraction should be ~3-5% (answer only),
+            # and the supervised text should be exactly the answer JSON + <end_of_turn>.
+            # Tokenize like the real trainer (add_special_tokens=True) and measure the
+            # fraction over real (non-pad) tokens so the printed % is faithful.
+            _n_check = min(8, len(dataset))
+            _verify_feats = [
+                {"input_ids": tokenizer(t, add_special_tokens=True)["input_ids"]}
+                for t in dataset["text"][:_n_check]
+            ]
+            _verify_batch = completion_collator(_verify_feats)
+            _attn = _verify_batch.get("attention_mask")
+            _fracs = []
+            for _i in range(_verify_batch["labels"].size(0)):
+                _lab = _verify_batch["labels"][_i]
+                _keep = _lab != -100
+                _n_sup = int(_keep.sum())
+                _real = int(_attn[_i].sum()) if _attn is not None else int(_lab.numel())
+                _frac = _n_sup / _real if _real else 0.0
+                _fracs.append(_frac)
+                if _i < 2:
+                    _kept_ids = _lab[_keep].tolist()
+                    print(f"[verify-mask] ex{_i}: {_n_sup}/{_real} non-pad "
+                          f"tokens supervised ({_frac:.1%})")
+                    print(f"[verify-mask] ex{_i} supervised text: "
+                          f"{tokenizer.decode(_kept_ids)!r}")
+            _mean_frac = sum(_fracs) / len(_fracs) if _fracs else 0.0
+            print(f"[verify-mask] mean supervised fraction over {len(_fracs)} examples: {_mean_frac:.2%}")
+            if _mean_frac <= 0.0:
+                print("[verify-mask] *** WARNING: 0% supervised — response template NOT found; "
+                      "loss would train on nothing. Check response_template_ids / packing=False. ***")
+            elif _mean_frac > 0.5:
+                print("[verify-mask] *** WARNING: >50% supervised — prompt likely NOT masked; "
+                      "loss may include the codebook. Check the response template. ***")
+
             # ── 4) Trainer ────────────────────────────────────────────
             trainer = SFTTrainer(
                 model=model,
@@ -1484,6 +1605,7 @@ def run_simple_gemma3(
                 eval_dataset=val_dataset if have_eval else None,
                 processing_class=tokenizer,
                 args=training_args,
+                data_collator=completion_collator,
             )
 
             print(f"Trainer ready  |  train bs={trainer.args.per_device_train_batch_size}  "

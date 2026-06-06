@@ -50,3 +50,5 @@ results/
 
 # misc
 .DS_Store
+
+results_logs/
