@@ -1355,6 +1355,57 @@ def run_simple_gemma3(
         ],
     )
 
+    # Per-experiment results folder: group this run's metrics CSVs under a timestamped
+    # subdir (run_id) so repeated jobs never overwrite, and persist the exact
+    # LoRA/quant/training settings alongside the metrics.
+    if results_folder is not None:
+        results_run_dir = os.path.join(results_folder, f"{run_id}_{mtype}_{gemma_model}")
+        os.makedirs(results_run_dir, exist_ok=True)
+        experiment_config = {
+            "run_id": run_id,
+            "mtype": mtype,
+            "model_id": model_id,
+            "gemma_model": gemma_model,
+            "lora": {
+                "r": peft_config.r,
+                "alpha": peft_config.lora_alpha,
+                "dropout": peft_config.lora_dropout,
+                "scaling": peft_config.lora_alpha / peft_config.r if peft_config.r else None,
+                "bias": peft_config.bias,
+                "task_type": str(peft_config.task_type),
+                "target_modules": list(peft_config.target_modules),
+            },
+            "quant": {
+                "load_in_4bit": True,
+                "quant_type": "nf4",
+                "compute_dtype": str(compute_dtype),
+                "double_quant": False,
+            },
+            "training": {
+                "learning_rates": list(learning_rates),
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "grad_accum_steps": grad_accum_steps,
+                "effective_batch_size": batch_size * grad_accum_steps,
+                "early_stopping_patience": early_stopping_patience,
+                "train_val_seeds": list(train_val_seeds),
+                "val_size": val_size,
+            },
+            "lengths": {
+                "max_tokens": max_tokens,
+                "max_new_tokens": max_new_tokens,
+                "max_text_tokens": max_text_tokens,
+            },
+            "data": {
+                "n_train_total": len(train_df),
+                "n_test": len(test_df),
+            },
+        }
+        with open(os.path.join(results_run_dir, "experiment_config.json"), "w") as _f:
+            json.dump(experiment_config, _f, indent=2, ensure_ascii=False)
+        print(f"[results] Per-run metrics + config under: {results_run_dir}")
+        results_folder = results_run_dir
+
     if pynvml_mod and handle:
         print("Initial GPU usage")
         print_gpu_memory(handle, pynvml_mod)
