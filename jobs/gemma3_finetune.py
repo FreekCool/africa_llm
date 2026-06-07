@@ -71,6 +71,24 @@ early_stopping = 5
 epochs = 5
 gemma_model = "4b"  # "4b" | "27b" for simple_gemma3
 
+# ── Smoke test (set AFRICA_SMOKE_TEST=1) ──────────────────────────────
+# Cheap end-to-end check of the inference fix: a tiny train/test subset and
+# a single epoch, written to a separate results/smoketest folder so it can't
+# be confused with a real run. Watch the val/test inference log for a high
+# JSON parse rate and clean JSON output (no repetition, hit_max≈0). Sizes are
+# env-overridable (AFRICA_SMOKE_N_TRAIN / AFRICA_SMOKE_N_TEST). Leave the flag
+# unset for a normal full run.
+if os.environ.get("AFRICA_SMOKE_TEST", "0") == "1":
+    n_train_smoke = int(os.environ.get("AFRICA_SMOKE_N_TRAIN", "64"))
+    n_test_smoke = int(os.environ.get("AFRICA_SMOKE_N_TEST", "16"))
+    train_df = train_df.iloc[:n_train_smoke]
+    test_df = test_df.iloc[:n_test_smoke]
+    epochs = 1
+    early_stopping = 1
+    results_dir = '/projects/prjs1308/africa_llm_data/results/smoketest'
+    print(f"[SMOKE TEST] train={len(train_df)} test={len(test_df)} epochs={epochs} "
+          f"results_dir={results_dir}")
+
 train_validate(
     mtype="simple_gemma3",      # <── key change
     train_df=train_df,

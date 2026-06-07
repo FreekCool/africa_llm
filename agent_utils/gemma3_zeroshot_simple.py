@@ -31,7 +31,6 @@ from .gemma3_finetune_simple import (
     GEMMA_MODEL_IDS,
     build_simple_val_prompts,
     run_simple_val_inference,
-    _precompute_prefix_kv,
 )
 
 
@@ -58,8 +57,6 @@ def run_zeroshot_simple_gemma3(
     max_val_infer=5,
     targets_spec=None,
     system_prompt: str = None,
-    inference_batch_size: int = 1,
-    stop_on_complete_json: bool = True,
     use_4bit: bool = False,
 ):
     """
@@ -176,9 +173,6 @@ def run_zeroshot_simple_gemma3(
 
     os.makedirs(results_folder, exist_ok=True)
 
-    # ── KV prefix cache for system prompt ─────────────────────────────
-    prefix_kv, prefix_len = _precompute_prefix_kv(model, tokenizer, system_prompt, device)
-
     # ── Run inference on test set ──────────────────────────────────────
     run_simple_val_inference(
         trainer=trainer,
@@ -196,16 +190,11 @@ def run_zeroshot_simple_gemma3(
         split_name="test",
         training_time_sec=None,
         targets_spec=targets_spec,
-        prefix_kv=prefix_kv,
-        prefix_len=prefix_len,
-        inference_batch_size=inference_batch_size,
-        stop_on_complete_json=stop_on_complete_json,
         gemma_model=gemma_model,
         run_id=run_id,
     )
 
     # ── Cleanup ────────────────────────────────────────────────────────
-    del prefix_kv
     del model
     gc.collect()
     if gpu_avail:
