@@ -23,6 +23,7 @@ import time
 import json
 import datetime
 import tempfile
+import contextlib
 
 import torch
 import pandas as pd
@@ -433,6 +434,7 @@ def run_simple_val_inference(
     targets_spec: dict | None = None,
     gemma_model: str | None = None,
     run_id: str | None = None,
+    compute_dtype=torch.bfloat16,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -566,7 +568,18 @@ def run_simple_val_inference(
         attention_mask = enc.get("attention_mask")
         if attention_mask is not None:
             attention_mask = attention_mask.to(device)
-        with torch.no_grad():
+        # Run generation under autocast so attention sees a single dtype.
+        # The model is 4-bit + LoRA with bf16 compute; during generation
+        # (use_cache=True) the bf16 KV cache holds k/v as bf16 while the fresh
+        # query is upcast to fp32 by the rotary/norm/LoRA paths, and SDPA
+        # rejects the mismatch. autocast casts q/k/v to a uniform dtype, the
+        # same precision context bf16 training uses internally.
+        amp_ctx = (
+            torch.autocast(device_type="cuda", dtype=compute_dtype)
+            if device.type == "cuda"
+            else contextlib.nullcontext()
+        )
+        with torch.no_grad(), amp_ctx:
             generated = trainer.model.generate(
                 input_ids=full_ids,
                 attention_mask=attention_mask,
@@ -1290,6 +1303,7 @@ def run_simple_gemma3(
                     targets_spec=targets_spec,
                     gemma_model=gemma_model,
                     run_id=run_id,
+                    compute_dtype=compute_dtype,
                 )
 
                 # Test inference: same procedure on held-out test set
@@ -1310,6 +1324,7 @@ def run_simple_gemma3(
                     targets_spec=targets_spec,
                     gemma_model=gemma_model,
                     run_id=run_id,
+                    compute_dtype=compute_dtype,
                 )
 
                 if gpu_avail:
