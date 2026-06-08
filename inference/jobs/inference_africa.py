@@ -4,6 +4,7 @@ import json
 import math
 import time
 import argparse
+import contextlib
 from datetime import datetime
 
 import torch
@@ -105,36 +106,38 @@ def load_model_and_tokenizer(adapter_dir: str, cache_dir: str):
 
     model = PeftModel.from_pretrained(base_model, adapter_dir)
     model.eval()
-    model.to(device)
+    # No .to(device): the 4-bit base was already placed by device_map, and calling
+    # .to() on a bnb-quantized model is redundant and can raise. This matches training.
 
     print("Loaded base model:", base_model_id)
     print("Using adapter from:", adapter_dir)
     print("Device:", device)
 
-    return model, tokenizer, device, system_prompt, prompt_template, max_tokens, default_max_new_tokens
+    return (
+        model,
+        tokenizer,
+        device,
+        system_prompt,
+        prompt_template,
+        max_tokens,
+        default_max_new_tokens,
+        compute_dtype,
+    )
 
 
 def setup_agent_utils_import(project_root: str):
-    # Ensure the given project root is on sys.path so we can import agent_utils
+    # Ensure the given project root is on sys.path so we can import agent_utils.
+    # Reuse the exact prompt-construction helpers from training so the inference
+    # prompt is byte-identical to what the model was fine-tuned on.
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from agent_utils.gemma3_finetune_simple import _extract_pred_json  # type: ignore
-
-    return _extract_pred_json
-
-
-def build_chat_input(tokenizer, system_prompt: str | None, prompt_template: str, text: str) -> str:
-    instruction = prompt_template.format(text)
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": instruction})
-    chat = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
+    from agent_utils.gemma3_finetune_simple import (  # type: ignore
+        _extract_pred_json,
+        _build_chat_text_simple,
     )
-    return chat
+    from agent_utils.utils import insert_text_once  # type: ignore
+
+    return _extract_pred_json, _build_chat_text_simple, insert_text_once
 
 
 def generate_annotation(
@@ -143,35 +146,57 @@ def generate_annotation(
     device: str,
     system_prompt: str | None,
     prompt_template: str,
-    _extract_pred_json,
+    helpers,
     text: str,
+    compute_dtype,
     default_max_new_tokens: int,
     max_new_tokens_override: int | None = None,
 ):
     """Generate JSON annotation for a single post.
 
     Returns (raw_text, parsed_json, elapsed_sec).
-    Uses _extract_pred_json first; if that fails, falls back to a
-    loose key/value regex extractor so we still recover partial
-    annotations when the JSON is slightly malformed/truncated.
+    The prompt is built with the same training helpers (safe text insertion via
+    insert_text_once, official chat template) — but the full transcript is passed
+    uncapped at inference. Generation runs under autocast for the same reason
+    training does: the 4-bit+LoRA+bf16 model otherwise hits an SDPA dtype mismatch
+    (bf16 KV cache vs fp32 query).
+    Uses _extract_pred_json first; if that fails, falls back to a loose key/value
+    regex extractor so we still recover partial annotations.
     """
     import re
+
+    _extract_pred_json, _build_chat_text_simple, insert_text_once = helpers
 
     max_new_tokens = max_new_tokens_override or default_max_new_tokens
     start = time.time()
 
-    chat = build_chat_input(tokenizer, system_prompt, prompt_template, text)
-    inputs = tokenizer(chat, return_tensors="pt").to(device)
+    instruction = insert_text_once(prompt_template, str(text))
+    chat = _build_chat_text_simple(tokenizer, instruction, answer=None, system_prompt=system_prompt)
 
-    with torch.no_grad():
+    inputs = tokenizer(chat, return_tensors="pt", padding=False, truncation=False)
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs.get("attention_mask")
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+
+    pad_token_id = getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+
+    amp_ctx = (
+        torch.autocast(device_type="cuda", dtype=compute_dtype)
+        if device == "cuda"
+        else contextlib.nullcontext()
+    )
+    with torch.no_grad(), amp_ctx:
         output_ids = model.generate(
-            **inputs,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+            num_return_sequences=1,
+            pad_token_id=pad_token_id,
         )
 
-    gen_ids = output_ids[0, inputs["input_ids"].shape[1]:]
+    gen_ids = output_ids[0, input_ids.shape[1]:]
     completion = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
     parsed = _extract_pred_json(completion)
@@ -216,25 +241,10 @@ def main():
 
     print(f"Loaded {len(df)} rows from {args.data_path}")
 
-    # Skip rows whose ids already appear in existing inference CSVs in output_dir
-    processed_ids: set[int] = set()
-    if os.path.isdir(args.output_dir):
-        for fname in os.listdir(args.output_dir):
-            if not (fname.startswith("inference_predictions_") and fname.endswith(".csv")):
-                continue
-            path = os.path.join(args.output_dir, fname)
-            try:
-                tmp = pd.read_csv(path, usecols=["id"])
-                processed_ids.update(tmp["id"].dropna().tolist())
-            except Exception as e:
-                print(f"Warning: could not read ids from {path}: {e}")
-    if processed_ids:
-        before = len(df)
-        df = df[~df["id"].isin(processed_ids)].reset_index(drop=True)
-        skipped = before - len(df)
-        print(f"Skipping {skipped} rows already processed (found {len(processed_ids)} unique processed ids).")
-
-    # Determine row range on the remaining (unprocessed) dataframe
+    # Partition the FULL dataframe by quarter/range FIRST so each job owns a fixed,
+    # disjoint slice of the data. Skipping already-processed ids before slicing would
+    # shrink the dataframe and shift the quarter boundaries between jobs that start at
+    # different times, leaving rows that no job ever processes.
     if args.quarter is not None:
         N = len(df)
         chunk_size = math.ceil(N / 4)
@@ -256,18 +266,47 @@ def main():
         f"→ {len(subset)} examples (range={range_name})"
     )
 
+    # Within this job's fixed slice, skip rows already present in inference CSVs in
+    # output_dir (crash-resume safety). This filters the slice only — it never changes
+    # the slice boundaries, so the quarters stay disjoint and jointly complete.
+    processed_ids: set[int] = set()
+    if os.path.isdir(args.output_dir):
+        for fname in os.listdir(args.output_dir):
+            if not (fname.startswith("inference_predictions_") and fname.endswith(".csv")):
+                continue
+            path = os.path.join(args.output_dir, fname)
+            try:
+                tmp = pd.read_csv(path, usecols=["id"])
+                processed_ids.update(tmp["id"].dropna().tolist())
+            except Exception as e:
+                print(f"Warning: could not read ids from {path}: {e}")
+    if processed_ids:
+        before = len(subset)
+        subset = subset[~subset["id"].isin(processed_ids)].reset_index(drop=True)
+        skipped = before - len(subset)
+        print(f"Skipping {skipped} of those rows already processed (found {len(processed_ids)} unique processed ids).")
+
     if args.dry_run:
         print("Dry run requested; exiting before loading model.")
         return
 
-    # Load model/tokenizer and helper from repo
-    model, tokenizer, device, system_prompt, prompt_template, max_tokens, default_max_new_tokens = load_model_and_tokenizer(
+    # Load model/tokenizer and helpers from repo
+    (
+        model,
+        tokenizer,
+        device,
+        system_prompt,
+        prompt_template,
+        max_tokens,
+        default_max_new_tokens,
+        compute_dtype,
+    ) = load_model_and_tokenizer(
         args.adapter_dir,
         args.cache_dir,
     )
     # Project root is one level above /inference, where agent_utils lives
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    _extract_pred_json = setup_agent_utils_import(project_root)
+    helpers = setup_agent_utils_import(project_root)
 
     inference_times: list[float] = []
     n_seen = 0
@@ -299,8 +338,9 @@ def main():
             device=device,
             system_prompt=system_prompt,
             prompt_template=prompt_template,
-            _extract_pred_json=_extract_pred_json,
+            helpers=helpers,
             text=text,
+            compute_dtype=compute_dtype,
             default_max_new_tokens=default_max_new_tokens,
             max_new_tokens_override=args.max_new_tokens,
         )

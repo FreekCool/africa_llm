@@ -9,13 +9,15 @@
 #SBATCH --time=48:00:00
 
 # Static paths (edit these if you move things)
-DATA_PATH="/home/fcool/africa_llm/inference/data/inference_data.csv"
+DATA_PATH="/home/fcool/africa_llm/inference/data/inference_data_filtered.csv"
 ADAPTER_DIR="/projects/prjs1308/africa_llm_data/results/inference_models/20260308_205449_simple_gemma3/simple_gemma3_4b_lr0.0001_seed42_20260308_205449"
-OUTPUT_DIR="/projects/prjs1308/africa_llm_data/inference_results"
+OUTPUT_DIR="/projects/prjs1308/africa_llm_data/inference_results_june"
 CACHE_DIR="/projects/prjs1308/huggingface/"
 
-# EDIT THIS QUARTER PER JOB SUBMISSION: 1, 2, 3, or 4
-QUARTER=1
+# Quarter (1-4) comes from the first sbatch argument, e.g.
+#   sbatch run_inference_africa.sbatch 2
+# Defaults to 1 if no argument is given.
+QUARTER="${1:-1}"
 
 echo "DATA_PATH   = ${DATA_PATH}"
 echo "ADAPTER_DIR = ${ADAPTER_DIR}"

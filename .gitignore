@@ -26,6 +26,7 @@ inference/data/
 
 # data / models / outputs (common "too big" folders)
 data/
+data_import/*.csv
 datasets/
 raw/
 processed/
