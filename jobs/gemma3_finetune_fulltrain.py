@@ -64,7 +64,7 @@ batch_size = 1
 max_tokens = 12288
 max_text_tokens = 500   # cap the TRANSCRIPT only at this many tokens (codebook is never capped)
 early_stopping = 5
-epochs = 5
+epochs = 2
 gemma_model = "4b"
 
 # val_size=0 → no validation split (train on full data); test_df is already empty
