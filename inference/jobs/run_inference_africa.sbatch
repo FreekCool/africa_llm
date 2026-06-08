@@ -27,7 +27,13 @@ echo "QUARTER     = ${QUARTER}"
 
 cd /home/fcool/africa_llm || exit 1
 
-python3.11 inference/jobs/inference_africa.py \
+# Isolated transformers overlay. This adapter (trained 2026-03-08) needs the
+# transformers >=4.52 module layout (model.language_model.layers), but the shared
+# ~/.local regressed to 4.50.3 — which leaves the LoRA unbound (all keys "missing").
+# We pin 4.53.3 in $HOME/tf_infer and run with -S so the overlay wins the import
+# path while torch/peft/bnb still load from ~/.local — without modifying the
+# shared env. Build once: pip install --target=$HOME/tf_infer --no-deps transformers==4.53.3
+PYTHONPATH="$HOME/tf_infer:$HOME/.local/lib/python3.11/site-packages" python3.11 -S inference/jobs/inference_africa.py \
   --data-path "${DATA_PATH}" \
   --adapter-dir "${ADAPTER_DIR}" \
   --cache-dir "${CACHE_DIR}" \
