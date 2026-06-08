@@ -102,6 +102,9 @@ def load_model_and_tokenizer(adapter_dir: str, cache_dir: str):
         device_map={"": 0} if device == "cuda" else None,
         torch_dtype=compute_dtype if device == "cuda" else None,
         cache_dir=cache_dir,
+        # eager attention: Gemma-3 head_dim=256 crashes the cuDNN SDPA kernel
+        # (mha_graph.execute ... false) during KV-cache decoding on H100.
+        attn_implementation="eager",
     )
 
     model = PeftModel.from_pretrained(base_model, adapter_dir)
