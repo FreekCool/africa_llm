@@ -67,8 +67,8 @@ batch_size = 1
 # raises if the codebook+answer ever wouldn't fit (it is never silently truncated).
 max_tokens = 12288
 max_text_tokens = 500   # cap the TRANSCRIPT only at this many tokens (codebook is never capped)
-early_stopping = 5
-epochs = 5
+early_stopping = 2
+epochs = 2
 gemma_model = "4b"  # "4b" | "27b" for simple_gemma3
 
 # ── Smoke test (set AFRICA_SMOKE_TEST=1) ──────────────────────────────

@@ -636,6 +636,7 @@ def run_simple_val_inference(
     header = (
         f"{'target':25s} {'n':>5s} "
         f"{'acc':>8s} {'prec':>8s} {'rec':>8s} {'f1':>8s} "
+        f"{'prec_mi':>8s} {'rec_mi':>8s} {'f1_mi':>8s} "
         f"{'answered%':>10s} {'in_label%':>10s} "
         f"{'n_app':>6s} {'acc_app':>8s}"
     )
@@ -724,8 +725,12 @@ def run_simple_val_inference(
                 prec, rec, f1, _ = precision_recall_fscore_support(
                     y_true_cmp, y_pred_cmp, average="macro", zero_division=0
                 )
+                prec_micro, rec_micro, f1_micro, _ = precision_recall_fscore_support(
+                    y_true_cmp, y_pred_cmp, average="micro", zero_division=0
+                )
             except Exception:
                 acc = prec = rec = f1 = 0.0
+                prec_micro = rec_micro = f1_micro = 0.0
 
             # Accuracy on the applicable subset only (gold != "not applicable").
             app_keep = [_is_applicable_gold(g) for g in y_true]
@@ -738,11 +743,13 @@ def run_simple_val_inference(
                     acc_applicable = None
         else:
             acc = prec = rec = f1 = 0.0
+            prec_micro = rec_micro = f1_micro = 0.0
 
         acc_app_str = f"{acc_applicable:8.3f}" if acc_applicable is not None else f"{'NA':>8s}"
         print(
             f"{t:25s} {n_gold:5d} "
             f"{acc:8.3f} {prec:8.3f} {rec:8.3f} {f1:8.3f} "
+            f"{prec_micro:8.3f} {rec_micro:8.3f} {f1_micro:8.3f} "
             f"{answered_frac*100:10.1f} {in_label_frac*100:10.1f} "
             f"{n_applicable:6d} {acc_app_str}"
         )
@@ -763,6 +770,9 @@ def run_simple_val_inference(
                 "precision_macro": prec,
                 "recall_macro": rec,
                 "f1_macro": f1,
+                "precision_micro": prec_micro,
+                "recall_micro": rec_micro,
+                "f1_micro": f1_micro,
                 "answered_frac": answered_frac,
                 "in_label_frac": in_label_frac,
                 "answers_in_label": ";".join(answers_in_label),
@@ -787,6 +797,9 @@ def run_simple_val_inference(
         "precision_macro": None,
         "recall_macro": None,
         "f1_macro": None,
+        "precision_micro": None,
+        "recall_micro": None,
+        "f1_micro": None,
         "answered_frac": None,
         "in_label_frac": None,
         "answers_in_label": None,
