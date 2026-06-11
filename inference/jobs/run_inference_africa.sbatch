@@ -10,7 +10,7 @@
 
 # Static paths (edit these if you move things)
 DATA_PATH="/home/fcool/africa_llm/inference/data/inference_data_filtered.csv"
-ADAPTER_DIR="/projects/prjs1308/africa_llm_data/results/inference_models/simple_gemma3_4b_lr0.0001_seed42_20260608_121714/simple_gemma3_4b_lr0.0001_seed42_20260608_121714"
+ADAPTER_DIR="/projects/prjs1308/africa_llm_data/results/inference_models/20260608_121714_simple_gemma3/simple_gemma3_4b_lr0.0001_seed42_20260608_121714"
 OUTPUT_DIR="/projects/prjs1308/africa_llm_data/inference_results_junev2"
 CACHE_DIR="/projects/prjs1308/huggingface/"
 
