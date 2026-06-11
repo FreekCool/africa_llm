@@ -14,20 +14,27 @@ ADAPTER_DIR="/projects/prjs1308/africa_llm_data/results/inference_models/2026060
 OUTPUT_DIR="/projects/prjs1308/africa_llm_data/inference_results_junev2"
 CACHE_DIR="/projects/prjs1308/huggingface/"
 
-# Quarter (1-4) comes from the first sbatch argument, e.g.
-#   sbatch run_inference_africa.sbatch 2
-# Defaults to 1 if no argument is given.
-QUARTER="${1:-1}"
+# Slice comes from the first sbatch argument: a part (1-NUM_PARTS) or an
+# explicit index range 'start:end', e.g.
+#   for i in 1 2 3 4 5 6; do sbatch run_inference_africa.sbatch $i; done
+#   sbatch run_inference_africa.sbatch 75000:87500
+# Defaults to part 1 if no argument is given.
+NUM_PARTS=6
+SLICE="${1:-1}"
+case "${SLICE}" in
+  *:*) SLICE_ARGS="--range ${SLICE}" ;;
+  *)   SLICE_ARGS="--part ${SLICE} --num-parts ${NUM_PARTS}" ;;
+esac
 
 echo "DATA_PATH   = ${DATA_PATH}"
 echo "ADAPTER_DIR = ${ADAPTER_DIR}"
 echo "OUTPUT_DIR  = ${OUTPUT_DIR}"
 echo "CACHE_DIR   = ${CACHE_DIR}"
-echo "QUARTER     = ${QUARTER}"
+echo "SLICE       = ${SLICE_ARGS}"
 
 cd /home/fcool/africa_llm || exit 1
 
-# Isolated transformers overlay. This adapter (trained 2026-03-08) needs the
+# Isolated transformers overlay. The adapter needs the
 # transformers >=4.52 module layout (model.language_model.layers), but the shared
 # ~/.local regressed to 4.50.3 — which leaves the LoRA unbound (all keys "missing").
 # We pin 4.53.3 in $HOME/tf_infer and run with -S so the overlay wins the import
@@ -37,6 +44,6 @@ PYTHONPATH="$HOME/tf_infer:$HOME/.local/lib/python3.11/site-packages" python3.11
   --data-path "${DATA_PATH}" \
   --adapter-dir "${ADAPTER_DIR}" \
   --cache-dir "${CACHE_DIR}" \
-  --quarter "${QUARTER}" \
+  ${SLICE_ARGS} \
   --output-dir "${OUTPUT_DIR}"
 

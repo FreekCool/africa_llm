@@ -42,10 +42,15 @@ def parse_args() -> argparse.Namespace:
         help="Explicit index range as 'start:end' (0-based, end exclusive).",
     )
     group.add_argument(
-        "--quarter",
+        "--part",
         type=int,
-        choices=[1, 2, 3, 4],
-        help="Process the 1st, 2nd, 3rd, or 4th quarter of the dataframe.",
+        help="1-based part index; the dataframe is split into --num-parts equal chunks.",
+    )
+    parser.add_argument(
+        "--num-parts",
+        type=int,
+        default=6,
+        help="Number of equal chunks the dataframe is split into for --part.",
     )
     parser.add_argument(
         "--output-dir",
@@ -244,16 +249,18 @@ def main():
 
     print(f"Loaded {len(df)} rows from {args.data_path}")
 
-    # Partition the FULL dataframe by quarter/range FIRST so each job owns a fixed,
+    # Partition the FULL dataframe by part/range FIRST so each job owns a fixed,
     # disjoint slice of the data. Skipping already-processed ids before slicing would
-    # shrink the dataframe and shift the quarter boundaries between jobs that start at
+    # shrink the dataframe and shift the part boundaries between jobs that start at
     # different times, leaving rows that no job ever processes.
-    if args.quarter is not None:
+    if args.part is not None:
+        if not 1 <= args.part <= args.num_parts:
+            raise ValueError(f"--part must be in [1, {args.num_parts}], got {args.part}")
         N = len(df)
-        chunk_size = math.ceil(N / 4)
-        start_idx = (args.quarter - 1) * chunk_size
-        end_idx = min(args.quarter * chunk_size, N)
-        range_name = f"quarter_{args.quarter}"
+        chunk_size = math.ceil(N / args.num_parts)
+        start_idx = (args.part - 1) * chunk_size
+        end_idx = min(args.part * chunk_size, N)
+        range_name = f"part_{args.part}_of_{args.num_parts}"
     else:
         try:
             start_s, end_s = args.range.split(":")
