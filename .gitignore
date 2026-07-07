@@ -17,8 +17,10 @@ results/
 inference/raw_data/
 inference/data/
 
-# Claude
-.claude/
+# Claude (keep shared skills/agents versioned; ignore local state)
+.claude/*
+!.claude/skills/
+!.claude/agents/
 
 # secrets
 .env
