@@ -435,6 +435,8 @@ def run_simple_val_inference(
     gemma_model: str | None = None,
     run_id: str | None = None,
     compute_dtype=torch.bfloat16,
+    val_ids=None,
+    predictions_out_path: str | None = None,
 ):
     """
     Run generation on validation prompts, print a few examples, and compute
@@ -444,6 +446,10 @@ def run_simple_val_inference(
     If targets_spec is provided, "in label" / "answers_in_label" use the
     target's allowed list (in-scope) instead of the gold set, so e.g. topic01
     predictions like AGRICULTURE are in_label even when no gold had that value.
+    If predictions_out_path is set, one row per example (id, json_ok, gold,
+    generated, predicted_json) is appended there for later error analysis;
+    val_ids (aligned to val_prompts) supplies the id column. Both default to
+    None, leaving per-epoch training behaviour unchanged.
     """
     N = min(len(val_prompts), len(val_gold_raw))
     if N == 0:
@@ -554,6 +560,20 @@ def run_simple_val_inference(
                 )
         if (i + 1) % 5 == 0 or i == N - 1:
             print(f"[val-inference] processed {i + 1}/{N} validation examples")
+        if predictions_out_path is not None:
+            rec_id = val_ids[i] if val_ids is not None and i < len(val_ids) else None
+            pred_json_str = json.dumps(parsed, ensure_ascii=False) if parsed is not None else None
+            pred_row = pd.DataFrame(
+                [{
+                    "id": rec_id,
+                    "json_ok": parsed is not None,
+                    "gold": gold,
+                    "generated": raw_completion,
+                    "predicted_json": pred_json_str,
+                }]
+            )
+            write_header = not os.path.exists(predictions_out_path)
+            pred_row.to_csv(predictions_out_path, mode="a", index=False, header=write_header)
 
     for i in range(N):
         prompt_text = val_prompts[i]
