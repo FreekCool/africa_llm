@@ -149,7 +149,7 @@ def main() -> None:
         predictions_out_path=predictions_out_path,
     )
 
-    print(f"[train-eval] per-record predictions: {predictions_out_path}")
+    print(f"[train-eval] per-record gold vs generated labels: {predictions_out_path}")
 
 
 if __name__ == "__main__":

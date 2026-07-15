@@ -446,10 +446,12 @@ def run_simple_val_inference(
     If targets_spec is provided, "in label" / "answers_in_label" use the
     target's allowed list (in-scope) instead of the gold set, so e.g. topic01
     predictions like AGRICULTURE are in_label even when no gold had that value.
-    If predictions_out_path is set, one row per example (id, json_ok, gold,
-    generated, predicted_json) is appended there for later error analysis;
-    val_ids (aligned to val_prompts) supplies the id column. Both default to
-    None, leaving per-epoch training behaviour unchanged.
+    If predictions_out_path is set, one row per example is appended there for
+    side-by-side comparison: id, json_ok, generated (raw completion), then a
+    gold_<target>/pred_<target> pair for every target (predictions resolved with
+    the same key-alias logic used for scoring). Requires targets_spec for the
+    column set; val_ids (aligned to val_prompts) supplies the id column. Both
+    default to None, leaving per-epoch training behaviour unchanged.
     """
     N = min(len(val_prompts), len(val_gold_raw))
     if N == 0:
@@ -457,6 +459,15 @@ def run_simple_val_inference(
         return None
 
     n_print = min(max_examples, N)
+
+    # Per-record side-by-side dump columns: one gold_/pred_ pair per target in a
+    # fixed order, so every appended row shares the same header. Needs targets_spec.
+    if predictions_out_path is not None:
+        if not targets_spec:
+            raise ValueError(
+                "predictions_out_path requires targets_spec to build gold_/pred_ columns"
+            )
+        pred_col_targets = sorted(targets_spec.keys())
 
     # storage for metrics
     per_target_true = defaultdict(list)
@@ -562,18 +573,27 @@ def run_simple_val_inference(
             print(f"[val-inference] processed {i + 1}/{N} validation examples")
         if predictions_out_path is not None:
             rec_id = val_ids[i] if val_ids is not None and i < len(val_ids) else None
-            pred_json_str = json.dumps(parsed, ensure_ascii=False) if parsed is not None else None
-            pred_row = pd.DataFrame(
-                [{
-                    "id": rec_id,
-                    "json_ok": parsed is not None,
-                    "gold": gold,
-                    "generated": raw_completion,
-                    "predicted_json": pred_json_str,
-                }]
-            )
+            try:
+                gold_dict_out = json.loads(gold)
+            except Exception:
+                gold_dict_out = {}
+            row_out = {
+                "id": rec_id,
+                "json_ok": parsed is not None,
+                "generated": raw_completion,
+            }
+            for t in pred_col_targets:
+                p_val = _resolve_pred_value(parsed, t) if parsed is not None else None
+                # Render list predictions ;-joined so multi-value pred cells line up
+                # with the ;-joined gold cells for easy side-by-side comparison.
+                if isinstance(p_val, list):
+                    p_val = ";".join(str(x) for x in p_val)
+                row_out[f"gold_{t}"] = gold_dict_out.get(t)
+                row_out[f"pred_{t}"] = p_val
             write_header = not os.path.exists(predictions_out_path)
-            pred_row.to_csv(predictions_out_path, mode="a", index=False, header=write_header)
+            pd.DataFrame([row_out]).to_csv(
+                predictions_out_path, mode="a", index=False, header=write_header
+            )
 
     for i in range(N):
         prompt_text = val_prompts[i]
