@@ -38,6 +38,11 @@ March; gradient checkpointing is on via `prepare_model_for_kbit_training`).
 ## Status
 
 - [x] `jobs/gemma3_finetune.py`: `gemma_model="27b"`, `epochs=3`
-- [ ] Launch `jobs/run_gemma3_finetuned.sbatch` on Snellius
+- [x] Launch `jobs/run_gemma3_finetuned.sbatch` on Snellius — run_id `20260913_165248`
+  (trainable params 466,010,112; `[verify-mask]` 4.51%, same as 4b)
+- [x] Epoch 0 in. Measured: training 49,469 s (13.7 h — 47% over projection),
+  val gen 18,563 s (50.4 s/prompt), test gen 22,917 s (49.8 s/prompt), parse 100%.
+  25.3 h/epoch → ~76 h for 3 epochs. Test mean over 27 targets: acc_app 0.809,
+  macro-F1 0.571 (4b ep0: 0.739–0.746 / 0.481–0.494; 4b ep1: 0.796–0.815 / 0.576–0.589).
 - [ ] Compare per-epoch val/test metrics vs `20260610_174324` (acc_applicable, macro-F1)
 - [ ] Pick epoch count for the 27b fulltrain (`gemma3_finetune_fulltrain.py`)
