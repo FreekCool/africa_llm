@@ -50,6 +50,8 @@ March; gradient checkpointing is on via `prepare_model_for_kbit_training`).
   never changed). Salvaged: epoch-0 val+test CSVs, epoch-1 val CSV; only the epoch-0
   adapter is saved (no resume path). Guard added: slurm logs gitignored, handoff
   requires empty `git status` on Snellius + `scontrol show job | grep TimeLimit`.
-- [ ] Relaunch the 3-epoch run with the repo sbatch (120 h) after cleaning the Snellius tree
+- [x] Relaunched 2026-09-16 as job 26793414 (gcn147) after cleaning the Snellius tree;
+  verified `TimeLimit=5-00:00:00`, partition MaxTime 5-00:00:00. Expect ~76 h.
+  run_id: TBD (`grep "All outputs" slurm-26793414.out`)
 - [ ] Compare per-epoch val/test metrics vs `20260610_174324` (acc_applicable, macro-F1)
 - [ ] Pick epoch count for the 27b fulltrain (`gemma3_finetune_fulltrain.py`)
