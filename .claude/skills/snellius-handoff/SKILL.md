@@ -24,6 +24,10 @@ via the `! <cmd>` prefix in this session).
    slice). Success = no PEFT "missing adapter keys" warning in the log + valid JSON
    output.
 4. **Emit the block** in one fenced code section, annotated per line.
+5. **One-way traffic.** Code only reaches Snellius via `git pull`. The block always
+   starts with `git status --short` (must be empty) and ends with a
+   `scontrol show job <jobid> | grep TimeLimit` check — a Snellius-only edit of an
+   sbatch `--time` once killed a 76 h run at 48 h with no error.
 
 ## Canonical block (adapt, don't reinvent)
 
@@ -32,7 +36,9 @@ via the `! <cmd>` prefix in this session).
 git push
 
 # on Snellius (user runs)
-cd /home/fcool/africa_llm && git pull
+cd /home/fcool/africa_llm
+git status --short        # MUST be empty — any ` M` line is Snellius-side drift: stop, don't sbatch
+git pull --ff-only
 
 # training
 sbatch jobs/run_gemma3_finetuned.sbatch          # simple_gemma3 fine-tune, H100, 120h
@@ -42,6 +48,9 @@ sbatch jobs/run_gemma3_smoketest.sbatch          # small smoke test
 # inference (6-way split of the filtered CSV; or an explicit start:end range)
 for i in 1 2 3 4 5 6; do sbatch inference/jobs/run_inference_africa.sbatch $i; done
 sbatch inference/jobs/run_inference_africa.sbatch 0:4    # smoke slice first!
+
+# verify what SLURM actually granted, right after submitting
+scontrol show job <jobid> | grep -E "TimeLimit|Partition"
 
 # monitor
 squeue -u fcool

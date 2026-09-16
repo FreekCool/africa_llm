@@ -54,4 +54,7 @@ results/
 # misc
 .DS_Store
 
+# slurm job logs (written into the submit dir on Snellius)
+slurm-*.out
+
 results_logs/

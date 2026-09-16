@@ -14,7 +14,9 @@ legacy/alternative machinery the current jobs do not use.
    claim model/tokenizer/trainer code is "verified" from a local run.
 2. **Never SSH to Snellius.** Local auth fails and the user drives all remote steps.
    Deliver exact copy-paste command blocks instead — use the `snellius-handoff`
-   skill.
+   skill. **Code flows one way: mac → git → Snellius.** Never edit tracked files on
+   Snellius; `git status --short` there must be empty before any `sbatch` (a
+   Snellius-only `--time=48:00:00` edit silently killed 27b run `20260913_165248`).
 3. **Never modify the shared `~/.local` on Snellius.** Version pins are isolated
    overlays (`pip install --target=$HOME/tf_infer --no-deps ...` + `python3.11 -S`).
 4. **Source-of-truth dataset:** `AFRICA-TRAIN-DB-3jun2026.csv` (2300 records —

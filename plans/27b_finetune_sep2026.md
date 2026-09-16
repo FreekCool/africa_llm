@@ -44,5 +44,12 @@ March; gradient checkpointing is on via `prepare_model_for_kbit_training`).
   val gen 18,563 s (50.4 s/prompt), test gen 22,917 s (49.8 s/prompt), parse 100%.
   25.3 h/epoch → ~76 h for 3 epochs. Test mean over 27 targets: acc_app 0.809,
   macro-F1 0.571 (4b ep0: 0.739–0.746 / 0.481–0.494; 4b ep1: 0.796–0.815 / 0.576–0.589).
+- [x] **Run `20260913_165248` (job 26642070) TIMEOUT at 48:00:00** on 2026-09-15 16:52,
+  ~3.9 h into epoch-1 test generation. Root cause: uncommitted Snellius-side edit
+  `--time=120:00:00` → `48:00:00` in `jobs/run_gemma3_finetuned.sbatch` (repo value
+  never changed). Salvaged: epoch-0 val+test CSVs, epoch-1 val CSV; only the epoch-0
+  adapter is saved (no resume path). Guard added: slurm logs gitignored, handoff
+  requires empty `git status` on Snellius + `scontrol show job | grep TimeLimit`.
+- [ ] Relaunch the 3-epoch run with the repo sbatch (120 h) after cleaning the Snellius tree
 - [ ] Compare per-epoch val/test metrics vs `20260610_174324` (acc_applicable, macro-F1)
 - [ ] Pick epoch count for the 27b fulltrain (`gemma3_finetune_fulltrain.py`)
