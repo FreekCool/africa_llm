@@ -53,5 +53,36 @@ March; gradient checkpointing is on via `prepare_model_for_kbit_training`).
 - [x] Relaunched 2026-09-16 as job 26793414 (gcn147) after cleaning the Snellius tree;
   verified `TimeLimit=5-00:00:00`, partition MaxTime 5-00:00:00. Expect ~76 h.
   run_id: TBD (`grep "All outputs" slurm-26793414.out`)
-- [ ] Compare per-epoch val/test metrics vs `20260610_174324` (acc_applicable, macro-F1)
-- [ ] Pick epoch count for the 27b fulltrain (`gemma3_finetune_fulltrain.py`)
+- [x] Run `20260916_153320` finished all 3 epochs (job 26793414, 75.7 h, parse rate
+  99.6–100%). Per-epoch TEST mean acc_app 0.809 / **0.841** / 0.823, macro-F1
+  0.582 / 0.598 / 0.595; VAL acc_app 0.802 / **0.840** / 0.826. Both splits pick
+  epoch 1.
+- [x] Compared vs 4b `20260610_174324`. Best-vs-best (both epoch 1): test acc_app
+  0.841 vs 0.815, val 0.840 vs 0.797. At equal epoch 0 the gap is larger (test
+  acc_app 0.809 vs 0.746). Rule of thumb: 27b after 1 epoch ≈ 4b after 2, then
+  +0.026 on top, for 5.3× train / 1.9× inference cost. Caveats: the 4b baseline
+  never ran epoch 2 and was still improving; `national_unity_narrow`'s +0.223 is
+  n=52 vs 10 — the real finding there is field coverage (27b emits the field
+  15→52→72 rows/epoch, 4b never does: 9→10). March free-string failure is gone
+  (in_label 87–93% vs 0–18%).
+- [x] **Epoch count for the 27b fulltrain: 2** (D4). Epoch 2 of the dev run
+  regressed six gated fields on BOTH splits (`subgroup_unity_text` −0.153,
+  `climate_change` −0.097, `resource_distribution_{by_whom1,for_whom1}` −0.089,
+  `_gender` −0.081, `_for_whom_region1` −0.077) while their plain accuracy moved
+  +0.002 — N/A drift, and those fields are where 27b's advantage over 4b lives.
+  Decided per-example, not per-epoch: the best dev checkpoint had seen each row
+  twice (1472 × 2), so 2 fulltrain epochs (2300 × 2) matches that repetition count
+  while giving 56% more steps from unique data. Counter-argument on record: on the
+  7 targets where macro-F1 is measurable (rarest class ≥5 expected test rows) epoch
+  2 wins (test 0.687 vs 0.648, val 0.794 vs 0.666) by starting to predict `unclear`
+  on `religion`/`african_unity`/`subgroup_unity`/`national_unity` — a trade against
+  conditional-field accuracy, not a free gain.
+- Note: the fulltrain run folder under `results/testing/` will contain ONLY
+  `experiment_config.json` — no val/test generation runs, so no metrics CSVs are
+  written. That is expected, not a failed run; the only in-run quality signal is
+  the `[verify-mask]` fraction (~4.5%). Adapter → `results/inference_models/`,
+  overwritten each epoch, so only the epoch-1 (final) weights survive.
+- [ ] Launch the 27b fulltrain (`jobs/run_gemma3_finetune_fulltrain.sbatch`,
+  `gemma_model="27b"`, `epochs=2`, ~43 h) → inference adapter
+- [ ] Point `inference/jobs/run_inference_africa.sbatch` ADAPTER_DIR at the new
+  27b adapter and re-verify with a `0:4` slice (transformers overlay layout check)
